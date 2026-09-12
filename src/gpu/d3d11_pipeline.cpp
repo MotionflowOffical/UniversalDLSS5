@@ -44,6 +44,15 @@ struct CameraMotionParams {
 Matrix4 matrixFromArray(const std::array<float,16>& a){
     Matrix4 m{}; for(int r=0;r<4;r++)for(int c=0;c<4;c++)m.m[r][c]=a[r*4+c]; return m;
 }
+bool isSrgbFormat(DXGI_FORMAT format){
+    return format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+           format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
+           format==DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+}
+MotionRoute fallbackMotionRoute(MotionSource source,bool nvofAvailable){
+    if(nvofAvailable) return MotionRoute::Nvof;
+    return source==MotionSource::SynthesizedOpticalFlow ? MotionRoute::Hlsl : MotionRoute::Zero;
+}
 }
 
 D3D11Pipeline::~D3D11Pipeline(){ if(backend_) neural::destroyBackend(backend_); }
@@ -255,13 +264,17 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     auto t0=std::chrono::high_resolution_clock::now();bool ok=true;
     if(desc.SampleDesc.Count>1)context_->ResolveSubresource(sourceCopy_.Get(),0,bb,0,desc.Format);else context_->CopyResource(sourceCopy_.Get(),bb);
 
-    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.forceReset=0u;p.useControlMask=settings.useControlMask?1u:0u;
+    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.sourceSrgb=isSrgbFormat(desc.Format)?1u:0u;p.useControlMask=settings.useControlMask?1u:0u;
     auto uploadMain=[&](){D3D11_MAPPED_SUBRESOURCE m{};if(FAILED(context_->Map(cb_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,&p,sizeof(p));context_->Unmap(cb_.Get(),0);return true;};
     auto uploadBuffer=[&](ID3D11Buffer* buffer,const void* data,size_t bytes){D3D11_MAPPED_SUBRESOURCE m{};if(!buffer||FAILED(context_->Map(buffer,0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,data,bytes);context_->Unmap(buffer,0);return true;};
     if(!uploadMain()){restore();return false;}
     {ID3D11ShaderResourceView*s[]={sourceSrv_.Get()};ok&=runCompute(convert_.Get(),s,1,currentUav_.Get(),width_,height_);}
-    p.exposure=1.0f;uploadMain();
+    // Feature 18's verified SDR contract consumes stored UNORM SDR values.
+    // A *_SRGB source SRV is implicitly decoded by D3D11 when building
+    // current_, so re-encode only for the RGBA8 neural proxy.
+    p.exposure=1.0f;p.pad0=1u;p.pad1=p.sourceSrgb;uploadMain();
     {ID3D11ShaderResourceView*s[]={currentSrv_.Get()};ok&=runCompute(convert_.Get(),s,1,nrInput8Uav_.Get(),width_,height_);}
+    p.pad0=0u;p.pad1=0u;uploadMain();
 
     const UINT lw=(width_+effective.flowDownsample-1)/effective.flowDownsample;
     const UINT lh=(height_+effective.flowDownsample-1)/effective.flowDownsample;
@@ -293,11 +306,8 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         availability.cameraDepth=cameraDepthReady;
     }
     availability.nvof=settings.motionSource!=MotionSource::Zero&&nvofAvailable;
-    availability.hlsl=settings.motionSource!=MotionSource::Zero;
+    availability.hlsl=settings.motionSource==MotionSource::SynthesizedOpticalFlow;
     MotionRoute route=settings.motionSource==MotionSource::Zero?MotionRoute::Zero:chooseMotionRoute(availability);
-    if(motionRouteValid_&&route!=lastMotionRoute_&&settings.resetOnTemporalGap)forceResetNext_=true;
-    lastMotionRoute_=route;motionRouteValid_=true;
-
     bool trustedMotion=false;
     float frameScaleX=settings.motionScaleX,frameScaleY=settings.motionScaleY;
 
@@ -313,7 +323,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
 
     if(route==MotionRoute::TrackedNative){
         ComPtr<ID3D11ShaderResourceView> nativeSrv;
-        if(!trackedMotion.texture||FAILED(device_->CreateShaderResourceView(trackedMotion.texture.Get(),nullptr,&nativeSrv))){route=cameraDepthReady?MotionRoute::CameraDepth:(nvofAvailable?MotionRoute::Nvof:MotionRoute::Hlsl);}
+        if(!trackedMotion.texture||FAILED(device_->CreateShaderResourceView(trackedMotion.texture.Get(),nullptr,&nativeSrv))){route=cameraDepthReady?MotionRoute::CameraDepth:fallbackMotionRoute(settings.motionSource,nvofAvailable);}
         else{
             NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)trackedMotion.meta.encoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;
             ok&=uploadBuffer(nativeMotionCb_.Get(),&np,sizeof(np));ID3D11ShaderResourceView*s[]={nativeSrv.Get()};ok&=runComputeWithConstants(nativeMotionConvert_.Get(),s,1,motionUav_.Get(),width_,height_,nativeMotionCb_.Get());
@@ -322,7 +332,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     }
 
     if(route==MotionRoute::CameraDepth){
-        if(!cameraDepthReady){route=nvofAvailable?MotionRoute::Nvof:MotionRoute::Hlsl;}
+        if(!cameraDepthReady){route=fallbackMotionRoute(settings.motionSource,nvofAvailable);}
         else{
             CameraMotionParams cp{};for(int r=0;r<4;r++)for(int c=0;c<4;c++)cp.currentClipToPreviousClip[r*4+c]=currentClipToPreviousClip.m[r][c];cp.width=width_;cp.height=height_;cp.motionScaleX=settings.motionScale;cp.motionScaleY=settings.motionScale*(settings.invertMotionY?-1.0f:1.0f);
             ok&=uploadBuffer(cameraCb_.Get(),&cp,sizeof(cp));ID3D11ShaderResourceView*s[]={depthSrv_.Get()};ok&=runComputeWithConstants(cameraMotion_.Get(),s,1,motionUav_.Get(),width_,height_,cameraCb_.Get());
@@ -330,32 +340,44 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         }
     }
 
+    if(route==MotionRoute::Nvof){
+        ok&=drawSrv(currentSrv_.Get(),nvof_.currentInputRtv(),width_,height_);
+        const bool hadPrevious=nvof_.hasHistory();const bool produced=nvof_.execute(st);
+        if(hadPrevious&&produced){
+            p.downsample=nvof_.gridSize();p.pad1=nvof_.hasCost()?1u:0u;uploadMain();const UINT nw=(width_+p.downsample-1)/p.downsample,nh=(height_+p.downsample-1)/p.downsample;ID3D11ShaderResourceView*s[]={nvof_.vectorSrv(),nvof_.costSrv()};ok&=runCompute(nvofUnpack_.Get(),s,2,flowUav_.Get(),nw,nh);
+        }else if(!hadPrevious){
+            const float initialFlow[4]={0,0,0,1};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),initialFlow);
+        }else{
+            // Auto is fail-safe: a failed hardware-flow frame becomes zero
+            // guidance, while the explicit Optical Flow mode may use HLSL.
+            route=fallbackMotionRoute(settings.motionSource,false);
+        }
+    }
+    if(route==MotionRoute::Hlsl){
+        p.downsample=effective.flowDownsample;p.pad1=0;uploadMain();ID3D11ShaderResourceView*s[]={currentLowSrv_.Get(),historyLowSrv_.Get()};ok&=runCompute(flow_.Get(),s,2,flowUav_.Get(),lw,lh);
+    }
     if(route==MotionRoute::Nvof||route==MotionRoute::Hlsl){
-        if(route==MotionRoute::Nvof){
-            ok&=drawSrv(currentSrv_.Get(),nvof_.currentInputRtv(),width_,height_);
-            const bool hadPrevious=nvof_.hasHistory();const bool produced=nvof_.execute(st);
-            if(hadPrevious&&produced){
-                p.downsample=nvof_.gridSize();p.pad1=nvof_.hasCost()?1u:0u;uploadMain();const UINT nw=(width_+p.downsample-1)/p.downsample,nh=(height_+p.downsample-1)/p.downsample;ID3D11ShaderResourceView*s[]={nvof_.vectorSrv(),nvof_.costSrv()};ok&=runCompute(nvofUnpack_.Get(),s,2,flowUav_.Get(),nw,nh);
-            }else if(!hadPrevious){const float initialFlow[4]={0,0,0,1};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),initialFlow);}
-            else route=MotionRoute::Hlsl;
-        }
-        if(route==MotionRoute::Hlsl){
-            p.downsample=effective.flowDownsample;p.pad1=0;uploadMain();ID3D11ShaderResourceView*s[]={currentLowSrv_.Get(),historyLowSrv_.Get()};ok&=runCompute(flow_.Get(),s,2,flowUav_.Get(),lw,lh);
-        }
         p.pad0=0;uploadMain();ID3D11ShaderResourceView*s[]={flowSrv_.Get()};ok&=runCompute(motion_.Get(),s,1,motionUav_.Get(),width_,height_);
     }else if(route==MotionRoute::Zero){
         const float zero[4]={0,0,1,0};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),zero);context_->ClearUnorderedAccessViewFloat(motionUav_.Get(),zero);nvof_.resetHistory();
         frameScaleX=frameScaleY=1.0f;
     }else nvof_.resetHistory();
 
+    // Record continuity after all runtime fallbacks have resolved.
+    if(motionRouteValid_&&route!=lastMotionRoute_&&settings.resetOnTemporalGap)forceResetNext_=true;
+    lastMotionRoute_=route;motionRouteValid_=true;
     wcsncpy_s(st.flowName,motionRouteLabel(route),_TRUNCATE);
     p.motionScaleX=frameScaleX;p.motionScaleY=frameScaleY;p.pad1=trustedMotion?2u:0u;uploadMain();
     {ID3D11ShaderResourceView*s[]={currentSrv_.Get(),historySrv_.Get(),flowSrv_.Get(),motionSrv_.Get()};ok&=runCompute(mask_.Get(),s,4,maskUav_.Get(),width_,height_);}
 
-    context_->CopyResource(nrControlMaskTex_.Get(),maskTex_.Get());
-    if(settings.useControlMask&&guide.controlMask)guideExtractor_.copyControlMask(guide,nrControlMaskTex_.Get(),width_,height_);
+    // Keep the synthetic mask for our own post-composite only.  Feature 18's
+    // known-good baseline does not bind a ControlMask, and a mask generated
+    // from approximate flow can turn motion errors into visible speckle.
+    bool explicitControlMask=false;
+    if(settings.useControlMask&&guide.controlMask&&guide.controlMaskConventionValid)
+        explicitControlMask=guideExtractor_.copyControlMask(guide,nrControlMaskTex_.Get(),width_,height_);
 
-    neural::FrameResources fr{};fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=nrControlMaskTex_.Get();fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
+    neural::FrameResources fr{};fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr;fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
     // Synthesized/camera/native converter paths already baked global MotionScale
     // and Y inversion into the texture. Adapter-native motion did not, so its
     // complete scale is carried through frameScaleX/Y above.

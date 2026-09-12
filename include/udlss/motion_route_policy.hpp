@@ -18,7 +18,7 @@ inline constexpr const wchar_t* motionRouteLabel(MotionRoute r){
     case MotionRoute::TrackedNative:return L"Tracked game-native velocity";
     case MotionRoute::CameraDepth:return L"Camera + game depth motion";
     case MotionRoute::Nvof:return L"NVIDIA Optical Flow Accelerator";
-    case MotionRoute::Hlsl:return L"HLSL optical flow fallback";
+    case MotionRoute::Hlsl:return L"HLSL optical flow (experimental)";
     default:return L"Zero motion vectors";
     }
 }

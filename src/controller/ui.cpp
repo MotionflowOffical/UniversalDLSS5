@@ -741,7 +741,7 @@ void makeUi() {
     SendMessageW(g.preset,CB_SETCURSEL,5,0);
     makeLabel(L"Motion",240,280,48);
     g.motion=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,292,276,145,180,IDC_MOTION);
-    comboAdd(g.motion,L"Auto: native -> camera+depth -> NVOFA -> HLSL");comboAdd(g.motion,L"Optical flow only");comboAdd(g.motion,L"Zero");
+    comboAdd(g.motion,L"Auto: native -> camera+depth -> NVOFA -> safe zero");comboAdd(g.motion,L"Optical flow (NVOFA/HLSL experimental)");comboAdd(g.motion,L"Zero");
     makeLabel(L"Latency",450,280,52);
     g.latency=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,505,276,130,180,IDC_LATENCY);
     comboAdd(g.latency,L"Ultra low");comboAdd(g.latency,L"Balanced");comboAdd(g.latency,L"Quality");

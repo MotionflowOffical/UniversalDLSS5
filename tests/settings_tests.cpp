@@ -57,10 +57,13 @@ int main() {
     assert(d.resetOnTemporalGap);
     assert(d.depthMode == DepthGuideMode::Auto);
     assert(d.debugView == DebugView::Final);
-    assert(nearf(d.nrIntensity, 0.85f));
-    assert(nearf(d.nrTone, 0.45f));
+    assert(nearf(d.temporalStrength, 1.0f));
+    assert(nearf(d.nrIntensity, 1.0f));
+    assert(nearf(d.nrTone, 1.0f));
     assert(nearf(d.nrStructure, 1.0f));
-    assert(nearf(d.nrSkinStructure, -1.0f));
+    assert(nearf(d.nrSkinStructure, 0.0f));
+    assert(!d.nrAutoMask);
+    assert(!d.nrUiCorrection);
 
     Settings ultra = d;
     ultra.latencyMode = LatencyMode::UltraLow;

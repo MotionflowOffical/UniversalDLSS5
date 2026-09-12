@@ -1,6 +1,7 @@
 #pragma once
 #include "settings.hpp"
 #include <charconv>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -101,6 +102,18 @@ inline bool decodeProfile(std::string_view text, Settings& out) {
     if(backendSeen && storedVersion < kSettingsVersion && s.backend == BackendMode::StreamlineDLSS5)
         s.backend = BackendMode::InGameNR;
     if(storedVersion < 5) { s.useControlMask=true; s.resetOnTemporalGap=true; }
+    // v0.2.8/v6 shipped experimental, non-neutral Feature-18 defaults.  Only
+    // migrate values that still match those exact defaults; custom tuning is
+    // preserved.  This makes existing profiles use the same neutral baseline
+    // as a fresh profile without wiping user-selected values.
+    if(storedVersion > 0 && storedVersion < 7) {
+        auto oldDefault=[](float value,float oldValue){return std::fabs(value-oldValue)<1e-5f;};
+        if(oldDefault(s.temporalStrength,0.80f)) s.temporalStrength=1.00f;
+        if(oldDefault(s.nrIntensity,0.85f)) s.nrIntensity=1.00f;
+        if(oldDefault(s.nrTone,0.45f)) s.nrTone=1.00f;
+        if(oldDefault(s.nrSkinStructure,-1.0f)) s.nrSkinStructure=0.0f;
+        if(storedVersion==6) { s.nrAutoMask=false; s.nrUiCorrection=false; }
+    }
     normalize(s); out=s; return any;
 }
 

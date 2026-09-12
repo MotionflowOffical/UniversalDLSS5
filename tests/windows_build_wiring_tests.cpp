@@ -362,7 +362,7 @@ int main() {
         return 1;
     }
     if (uiSource.find("Direct in-game NR (recommended)") == std::string::npos ||
-        uiSource.find("Auto: native -> camera+depth -> NVOFA -> HLSL") == std::string::npos ||
+        uiSource.find("Auto: native -> camera+depth -> NVOFA -> safe zero") == std::string::npos ||
         uiSource.find("Execution location: ") == std::string::npos ||
         uiSource.find("Native motion candidate: ") == std::string::npos ||
         uiSource.find("Camera matrices: ") == std::string::npos) {
@@ -438,7 +438,7 @@ int main() {
         d3d11Source.find("guideExtractor_.prepareDepth") == std::string::npos ||
         d3d11Source.find("Synthetic far depth") == std::string::npos ||
         d3d11Source.find("nrControlMaskTex_") == std::string::npos ||
-        d3d11Source.find("fr.controlMask=nrControlMaskTex_.Get()") == std::string::npos ||
+        d3d11Source.find("fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr") == std::string::npos ||
         d3d11Source.find("guide.cameraCut") == std::string::npos) {
         std::cerr << "D3D11 pipeline does not consume the extracted guides/control mask safely\n";
         return 1;

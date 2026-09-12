@@ -4,7 +4,7 @@
 
 namespace udlss {
 
-constexpr std::uint32_t kSettingsVersion = 6;
+constexpr std::uint32_t kSettingsVersion = 7;
 
 enum class BackendMode : std::uint32_t { InGameNR = 0, StreamlineDLSS5 = InGameNR, Passthrough = 1, ExternalHostNR = 2 };
 enum class MotionSource : std::uint32_t { Auto = 0, SynthesizedOpticalFlow = 1, Zero = 2 };
@@ -28,8 +28,8 @@ struct Settings {
     bool resetOnTemporalGap = true;
     bool useGameDepth = true;
     bool loadGameGuideAdapter = true;
-    bool nrAutoMask = true;
-    bool nrUiCorrection = true;
+    bool nrAutoMask = false;
+    bool nrUiCorrection = false;
 
     BackendMode backend = BackendMode::InGameNR;
     MotionSource motionSource = MotionSource::Auto;
@@ -40,7 +40,7 @@ struct Settings {
 
     float sharpness = 0.15f;
     float exposure = 1.0f;
-    float temporalStrength = 0.80f;
+    float temporalStrength = 1.00f;
     float motionScale = 1.0f; // legacy/global multiplier
     float motionScaleX = 1.0f;
     float motionScaleY = 1.0f;
@@ -55,10 +55,13 @@ struct Settings {
     float edgeThreshold = 0.12f;
 
     // Verified DLSS-NR controls.
-    float nrIntensity = 0.85f;
-    float nrTone = 0.45f;
+    // Keep the private Feature-18 controls neutral by default.  The prior
+    // 0.85/0.45/-1 defaults were not a verified baseline and visibly shifted
+    // tone/contrast on SDR content.
+    float nrIntensity = 1.00f;
+    float nrTone = 1.00f;
     float nrStructure = 1.00f;
-    float nrSkinStructure = -1.0f; // -1 follows structure
+    float nrSkinStructure = 0.00f;
     float nrPaperWhite = 1.0f;
     float nrTransferStrength = 1.0f;
     float nrColorStrength = 1.0f;

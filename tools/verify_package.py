@@ -176,7 +176,7 @@ for shader in ['convert.hlsl','downsample.hlsl','flow.hlsl','nvof_unpack.hlsl','
 
 # v0.2.8 retains the v0.2.7 quality-guide invariants.
 for token in ['GuideProbeResult guide', 'guideExtractor_.probe', 'guideExtractor_.prepareDepth',
-              'nrControlMaskTex_', 'fr.controlMask=nrControlMaskTex_.Get()', 'guide.cameraCut']:
+              'nrControlMaskTex_', 'fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr', 'guide.cameraCut']:
     if token not in pipeline:
         fail(f'v0.2.8 D3D11 guide pipeline missing: {token}')
 flow = (ROOT / 'shaders/flow.hlsl').read_text(encoding='utf-8')

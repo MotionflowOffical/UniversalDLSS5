@@ -24,8 +24,10 @@ Guide priority in Auto mode:
   2. detected game-native velocity/motion resource
   3. camera matrices + real game depth reconstruction
   4. NVIDIA Optical Flow (when SDK headers/driver path are available)
-  5. HLSL optical-flow fallback
-  6. zero motion
+  5. safe zero motion
+
+The coarse HLSL block matcher is intentionally NOT an automatic fallback.
+Select "Optical flow (NVOFA/HLSL experimental)" explicitly to test it.
 
 All frame/color/depth/motion resources stay GPU-resident. UniversalDLSS5 does not use screenshot capture, staging framebuffer readback, BitBlt, WGC, or CPU pixel transfer.
 
@@ -33,3 +35,7 @@ BUILD_WINDOWS.bat copies this folder to:
   build\x64\bin\Release\runtime\
 
 The source ZIP intentionally contains none of the proprietary DLLs listed above.
+
+
+Deployment note:
+  UniversalDLSS5.Bridge.dll and nvngx.dll_UniversalDLSS5_NRForwarder.dll stay in the built x64 output directory; they do not need to be copied beside the game executable.

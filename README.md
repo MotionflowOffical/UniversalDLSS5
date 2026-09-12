@@ -5,7 +5,7 @@
 - **New default:** `Direct in-game NR (recommended)` runs the neural integration inside the target render process instead of treating the game as only a finished-frame source.
 - **Non-DLSS games supported:** the bridge creates its own same-adapter D3D12 neural execution context for D3D11 games; the game does not need to ship DLSS or Streamline.
 - **Backend order:** authorized Streamline feature 1004 when `sl.interposer.dll` + `sl.common.dll` + `sl.dlss_nr.dll` are supplied, then the proven signed feature-18 forwarder path, then automatic external-NRHost fallback.
-- **Motion-source order:** explicit GameGuides native motion -> detected game-native velocity -> camera matrices + real depth -> NVIDIA Optical Flow -> HLSL optical flow -> zero motion.
+- **Motion-source order (Auto):** explicit GameGuides native motion -> detected game-native velocity -> camera matrices + real depth -> NVIDIA Optical Flow -> safe zero motion. The coarse HLSL block matcher is available only through the explicit experimental Optical Flow mode.
 - **Unity/D3D11 tracking:** shader reflection can recognize `_CameraMotionVectorsTexture`; the bridge also tracks dominant full-resolution depth across the frame and current/previous view-projection candidates from constant buffers.
 - **Camera reconstruction:** `camera_motion.hlsl` creates current->previous pixel motion from real depth plus validated current/previous view-projection matrices.
 - **No CPU frame path:** color/depth/motion/control resources remain on GPU. No screenshot capture, framebuffer staging readback, WGC, BitBlt, or arbitrary process-memory scanning is added.
@@ -20,11 +20,11 @@ The frame path never uses desktop/window capture, GDI screenshots, D3D staging t
 
 ## Current rendering paths
 
-- **D3D11 source, default:** DXGI/D3D11 interception -> frame-complete resource/camera tracking -> native/camera/NVOFA/HLSL guide composer -> direct in-game NR mount. The mount creates a private same-adapter D3D12 device/queue when the source game does not already provide one.
+- **D3D11 source, default:** DXGI/D3D11 interception -> frame-complete resource/camera tracking -> native/camera/NVOFA/safe-zero guide composer -> direct in-game NR mount. The mount creates a private same-adapter D3D12 device/queue when the source game does not already provide one.
 - **D3D12 source:** the existing D3D11On12 guide bridge captures the source device/queue and passes those native D3D12 objects into the same in-game neural backend. Native D3D12 G-buffer discovery is not yet as complete as the D3D11 tracker.
 - **Direct in-game backend order:** Streamline DLSS-NR feature 1004 when a complete user-supplied Streamline NR stack validates; otherwise caller-compatible signed feature 18 through `nvngx.dll_UniversalDLSS5_NRForwarder.dll`.
 - **Automatic fallback:** if both in-game routes fail to initialize, the bridge attempts the proven x64 External NR Host. Passthrough is only the final fallback.
-- **Motion:** explicit GameGuides motion -> positively identified native game velocity -> camera+real-depth reconstruction -> NVIDIA Optical Flow Accelerator -> HLSL block-search fallback -> zero motion.
+- **Motion (Auto):** explicit GameGuides motion -> positively identified native game velocity -> camera+real-depth reconstruction -> NVIDIA Optical Flow Accelerator -> safe zero motion. The HLSL block-search route is opt-in/experimental rather than an automatic fallback.
 - **Depth:** D3D11 tracks the dominant exact-size scene DSV across the completed frame and uses its clear value as a reversed-Z/conventional-Z hint. An explicit GameGuides adapter can override it; synthetic far depth is the last fallback.
 - **Camera data:** D3D11 vertex-shader reflection and constant-buffer update/bind tracking are used conservatively to recover a stable view-projection sequence without arbitrary process-memory scanning.
 - **Multi-process applications:** the controller follows the selected process tree and preferentially attaches to children that have loaded DXGI.
@@ -96,7 +96,7 @@ set NVOF_SDK_ROOT=C:\path\to\NVIDIA_Optical_Flow_SDK
 BUILD_WINDOWS.bat
 ```
 
-The build looks for `NvOFInterface\nvOpticalFlowD3D11.h` or an `include` directory. If the headers are absent, the GPU HLSL fallback remains available automatically.
+The build looks for `NvOFInterface\nvOpticalFlowD3D11.h` or an `include` directory. If the headers are absent, **Auto** falls back to zero motion rather than feeding the neural model the coarse HLSL block matcher. The HLSL route remains available through the explicit **Optical flow (NVOFA/HLSL experimental)** motion mode.
 
 ## Runtime folder
 
@@ -109,6 +109,8 @@ nvngx_dlssnr.dll
 ```
 
 `BUILD_WINDOWS.bat` also builds `UniversalDLSS5.NRHost.exe` and `nvngx.dll_UniversalDLSS5_NRForwarder.dll` into the x64 output folder. Both are UniversalDLSS5 project code, not NVIDIA runtime binaries.
+
+`UniversalDLSS5.Bridge.dll` and `nvngx.dll_UniversalDLSS5_NRForwarder.dll` do **not** need to be copied into the game directory. The controller injects the bridge by absolute path, and the in-game backend loads the forwarder from the controller output directory (the parent of the selected `runtime\` folder).
 
 For the optional **Streamline feature-1004** route, also place `sl.interposer.dll`, `sl.common.dll`, and `sl.dlss_nr.dll` in the same runtime folder. The build obtains only public Streamline/NGX headers from pinned source repositories; all proprietary runtime DLLs remain user-supplied. The controller defaults to this output runtime directory but also lets you select another folder.
 

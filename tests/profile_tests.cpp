@@ -30,6 +30,21 @@ int main(){
     assert(udlss::decodeProfile("version=5\nbackend=2\n", legacyHost));
     assert(legacyHost.backend == udlss::BackendMode::ExternalHostNR);
 
+
+    // v6 shipped non-neutral private Feature-18 defaults. Migrate only the exact
+    // old defaults so existing custom tuning remains intact.
+    udlss::Settings legacyV6{};
+    const std::string legacyV6Text =
+        "version=6\ntemporalStrength=0.8\nnrIntensity=0.85\nnrTone=0.45\n"
+        "nrStructure=1\nnrSkinStructure=-1\nnrAutoMask=1\nnrUiCorrection=1\n";
+    assert(udlss::decodeProfile(legacyV6Text, legacyV6));
+    assert(legacyV6.temporalStrength > 0.999f);
+    assert(legacyV6.nrIntensity > 0.999f);
+    assert(legacyV6.nrTone > 0.999f);
+    assert(legacyV6.nrSkinStructure > -0.001f && legacyV6.nrSkinStructure < 0.001f);
+    assert(!legacyV6.nrAutoMask);
+    assert(!legacyV6.nrUiCorrection);
+
     // Explicit passthrough remains passthrough across migration.
     udlss::Settings legacyPass{};
     assert(udlss::decodeProfile("version=3\nbackend=1\n", legacyPass));

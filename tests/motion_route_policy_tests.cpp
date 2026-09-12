@@ -11,5 +11,6 @@ int main(){
     a.nvof=false;assert(chooseMotionRoute(a)==MotionRoute::Hlsl);
     a.hlsl=false;assert(chooseMotionRoute(a)==MotionRoute::Zero);
     assert(std::wstring_view(motionRouteLabel(MotionRoute::CameraDepth))==L"Camera + game depth motion");
+    assert(std::wstring_view(motionRouteLabel(MotionRoute::Hlsl))==L"HLSL optical flow (experimental)");
     return 0;
 }
