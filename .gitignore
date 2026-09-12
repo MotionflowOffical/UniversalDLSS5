@@ -1,0 +1,14 @@
+/build/
+/build-*/
+/.vs/
+/.vscode/
+*.user
+*.suo
+*.VC.db
+*.dll
+*.exe
+*.lib
+*.pdb
+*.onnx
+__pycache__/
+*.pyc
