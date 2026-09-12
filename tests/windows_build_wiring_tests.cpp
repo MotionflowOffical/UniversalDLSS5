@@ -88,7 +88,7 @@ int main() {
     }
     if (ngxBackend.find("LoadLibraryExW") == std::string::npos ||
         ngxBackend.find("GetProcAddress") == std::string::npos ||
-        ngxBackend.find("NVSDK_NGX_D3D12_GetCapabilityParameters") == std::string::npos ||
+        ngxBackend.find("NVSDK_NGX_D3D12_AllocateParameters(&params_)") == std::string::npos ||
         ngxBackend.find("\"NVSDK_NGX_D3D12_Init_Ext\"") == std::string::npos ||
         ngxBackend.find("\"NVSDK_NGX_D3D12_PopulateParameters_Impl\"") == std::string::npos ||
         ngxBackend.find("snippetPopulate_") == std::string::npos ||
@@ -97,14 +97,13 @@ int main() {
         std::cerr << "DLSS-NR backend does not implement the D3D12 NGX core + nvngx_dlssnr snippet route\n";
         return 1;
     }
-    if (ngxBackend.find("safeSnippetInit(snippetInit_") == std::string::npos ||
-        ngxBackend.find("params_,initException") == std::string::npos) {
-        std::cerr << "DLSS-NR snippet initialization does not receive the core capability parameter block\n";
+    if (ngxBackend.find("safeSnippetInit(snippetInit_,kFallbackSnippetApplicationId,runtime_.c_str(),d12_.Get(),nullptr,initException)") == std::string::npos) {
+        std::cerr << "DLSS-NR signed snippet init does not match the verified app-id/runtime-path/null-params contract\n";
         return 1;
     }
     if (ngxBackend.find("NVSDK_NGX_GetApplicationId") == std::string::npos ||
-        ngxBackend.find("snippetApplicationId_") == std::string::npos) {
-        std::cerr << "DLSS-NR backend does not discover the staged snippet application ID\n";
+        ngxBackend.find("reportedApplicationId") == std::string::npos) {
+        std::cerr << "DLSS-NR backend no longer reports the staged snippet application ID for diagnostics\n";
         return 1;
     }
     if (ngxBackend.find("DLSSNRComputeScalingRatioCallback") == std::string::npos ||
@@ -112,11 +111,22 @@ int main() {
         std::cerr << "DLSS-NR create contract is missing scaling callback/perf-quality parameters\n";
         return 1;
     }
-    if (ngxBackend.find("D3D11_RESOURCE_MISC_SHARED_NTHANDLE") == std::string::npos ||
-        ngxBackend.find("D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX") == std::string::npos ||
+    if (ngxBackend.find("D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE") == std::string::npos ||
+        ngxBackend.find("D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX") != std::string::npos ||
         ngxBackend.find("OpenSharedHandle") == std::string::npos ||
         ngxBackend.find("OpenSharedFence") == std::string::npos) {
         std::cerr << "D3D11 source path is missing GPU-shared texture/fence interop into D3D12\n";
+        return 1;
+    }
+    if (ngxBackend.find("DLSS.Indicator.Invert.X.Axis") == std::string::npos ||
+        ngxBackend.find("DLSS.Indicator.Invert.Y.Axis") == std::string::npos) {
+        std::cerr << "DLSS-NR evaluate contract is missing the verified indicator axis parameters\n";
+        return 1;
+    }
+    if (ngxBackend.find("NVSDK_NGX_Parameter_SetF(params_,kPaperWhite") != std::string::npos ||
+        ngxBackend.find("NVSDK_NGX_Parameter_SetF(params_,kTransferStrength") != std::string::npos ||
+        ngxBackend.find("NVSDK_NGX_Parameter_SetF(params_,kColorStrength") != std::string::npos) {
+        std::cerr << "Direct Feature-18 path still sends non-contract generic color parameters\n";
         return 1;
     }
     if (ngxBackend.find("safeNgxCreateFeature") == std::string::npos ||

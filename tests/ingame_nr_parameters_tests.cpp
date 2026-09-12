@@ -12,7 +12,11 @@ int main(){
  assert(s.find("DLSSNR.ControlMask")!=std::string::npos);
  assert(s.find("DLSSNR.SkinStructureStrength")!=std::string::npos);
  assert(s.find("DLSSNR.UICorrection")!=std::string::npos);
- assert(s.find("PaperWhiteScale")!=std::string::npos);
+ assert(s.find("DLSS.Indicator.Invert.X.Axis")!=std::string::npos);
+ assert(s.find("DLSS.Indicator.Invert.Y.Axis")!=std::string::npos);
+ assert(s.find("NVSDK_NGX_Parameter_SetF(params_,kPaperWhite")==std::string::npos);
+ assert(s.find("NVSDK_NGX_Parameter_SetF(params_,kTransferStrength")==std::string::npos);
+ assert(s.find("NVSDK_NGX_Parameter_SetF(params_,kColorStrength")==std::string::npos);
  assert(s.find("frame.motionScaleX")!=std::string::npos);
  assert(s.find("frame.motionScaleY")!=std::string::npos);
  assert(s.find("frame.depthInverted")!=std::string::npos);

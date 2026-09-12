@@ -62,20 +62,29 @@ for forbidden in ['NVSDK_NGX_D3D11_Init_with_ProjectID', 'NVSDK_NGX_D3D11_Create
     if forbidden in ngx_backend:
         fail(f'DLSS-NR backend regressed to the D3D11 NGX route: {forbidden}')
 for token in ['NVSDK_NGX_Feature_Reserved18', 'NVSDK_NGX_D3D12_Init_with_ProjectID',
-              'NVSDK_NGX_D3D12_GetCapabilityParameters', 'LoadLibraryExW', 'GetProcAddress',
+              'NVSDK_NGX_D3D12_AllocateParameters(&params_)', 'LoadLibraryExW', 'GetProcAddress',
               '"NVSDK_NGX_D3D12_Init_Ext"', '"NVSDK_NGX_D3D12_PopulateParameters_Impl"',
               'snippetPopulate_', 'snippetCreate_', 'snippetEvaluate_',
-              'D3D11_RESOURCE_MISC_SHARED_NTHANDLE', 'D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX', 'OpenSharedHandle', 'OpenSharedFence']:
+              'D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE', 'OpenSharedHandle', 'OpenSharedFence']:
     if token not in ngx_backend:
         fail(f'D3D12-unified NGX backend missing expected API usage: {token}')
 
-if ('safeSnippetInit(snippetInit_' not in ngx_backend or
-        'd12_.Get(),params_,initException)' not in ngx_backend):
-    fail('DLSS-NR snippet init must receive the core capability parameter block')
+if 'safeSnippetInit(snippetInit_,kFallbackSnippetApplicationId,runtime_.c_str(),d12_.Get(),nullptr,initException)' not in ngx_backend:
+    fail('DLSS-NR signed snippet init does not match the verified app-id/runtime-path/null-params contract')
 for token in ['NVSDK_NGX_GetApplicationId', 'snippetApplicationId_',
               'DLSSNRComputeScalingRatioCallback', 'NVSDK_NGX_Parameter_PerfQualityValue']:
     if token not in ngx_backend:
         fail(f'DLSS-NR compatibility contract missing: {token}')
+if 'D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX' in ngx_backend:
+    fail('Direct NGX shared textures must use SHARED|SHARED_NTHANDLE, not keyed mutex synchronization')
+for forbidden in ['NVSDK_NGX_Parameter_SetF(params_,kPaperWhite',
+                  'NVSDK_NGX_Parameter_SetF(params_,kTransferStrength',
+                  'NVSDK_NGX_Parameter_SetF(params_,kColorStrength']:
+    if forbidden in ngx_backend:
+        fail(f'Direct Feature-18 path sends a non-contract generic parameter: {forbidden}')
+for token in ['DLSS.Indicator.Invert.X.Axis', 'DLSS.Indicator.Invert.Y.Axis']:
+    if token not in ngx_backend:
+        fail(f'Direct Feature-18 evaluate contract missing: {token}')
 if 'NVSDK_NGX_D3D11_CreateFeature' in ngx_backend or 'NVSDK_NGX_D3D11_EvaluateFeature' in ngx_backend:
     fail('DLSS-NR execution must remain D3D12-only')
 

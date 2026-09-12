@@ -59,9 +59,8 @@ constexpr const char* kLocalStructure = "DLSSNR.LocalStructureStrength";
 constexpr const char* kSkinStructure = "DLSSNR.SkinStructureStrength";
 constexpr const char* kUseAutoMask = "DLSSNR.UseAutoMask";
 constexpr const char* kUiCorrection = "DLSSNR.UICorrection";
-constexpr const char* kPaperWhite = "PaperWhiteScale";
-constexpr const char* kTransferStrength = "TransferStrength";
-constexpr const char* kColorStrength = "ColorStrength";
+constexpr const char* kIndicatorInvertX = "DLSS.Indicator.Invert.X.Axis";
+constexpr const char* kIndicatorInvertY = "DLSS.Indicator.Invert.Y.Axis";
 constexpr const char* kColorSubrectX = "DLSSNR.ColorSubrectBaseX";
 constexpr const char* kColorSubrectY = "DLSSNR.ColorSubrectBaseY";
 constexpr const char* kColorSubrectW = "DLSSNR.ColorSubrectWidth";
@@ -268,7 +267,7 @@ public:
         const auto logDir=ngxLogDirectory();
         const auto result=NVSDK_NGX_D3D12_Init_with_ProjectID(
             kProjectId,NVSDK_NGX_ENGINE_TYPE_CUSTOM,kEngineVersion,
-            logDir.c_str(),d12_.Get(),&featureInfo,NVSDK_NGX_Version_API);
+            runtime_.c_str(),d12_.Get(),&featureInfo,NVSDK_NGX_Version_API);
         if(NVSDK_NGX_FAILED(result)) {
             setFailure(status,PipelineStage::NgxCoreInitFailed,static_cast<int>(result),
                        L"NGX D3D12 core init failed for DLSS-NR (0x"+hex8(result)+L")");
@@ -278,13 +277,13 @@ public:
         ngxInitialized_=true;
         markPipelineStage(status.stageMask,PipelineStage::NgxCoreInitialized);
 
-        auto paramResult=NVSDK_NGX_D3D12_GetCapabilityParameters(&params_);
+        // Feature 18's verified signed-snippet path uses a fresh D3D12
+        // parameter block. Capability parameters are a different object and
+        // may carry capability-query state that the private NR snippet does
+        // not expect during Create/Evaluate.
+        auto paramResult=NVSDK_NGX_D3D12_AllocateParameters(&params_);
         if(NVSDK_NGX_FAILED(paramResult) || !params_) {
-            params_=nullptr;
-            paramResult=NVSDK_NGX_D3D12_AllocateParameters(&params_);
-        }
-        if(NVSDK_NGX_FAILED(paramResult) || !params_) {
-            setFailure(status,PipelineStage::NgxCoreInitFailed,static_cast<int>(paramResult),L"NGX D3D12 capability/parameter allocation failed");
+            setFailure(status,PipelineStage::NgxCoreInitFailed,static_cast<int>(paramResult),L"NGX D3D12 parameter allocation failed");
             shutdown();
             return false;
         }
@@ -336,11 +335,13 @@ public:
         snippetApplicationId_=kFallbackSnippetApplicationId;
         DWORD applicationIdException=0;
         const auto reportedApplicationId=safeSnippetApplicationId(snippetGetApplicationId_,applicationIdException);
-        if(reportedApplicationId!=0) snippetApplicationId_=reportedApplicationId;
         snippetVersion_=safeSnippetVersion(snippetGetVersion_);
 
+        // Match the verified signed Feature-18 bootstrap exactly: fixed signed
+        // snippet application ID, the directory containing nvngx_dlssnr.dll,
+        // and no capability/feature parameter block passed to Init_Ext.
         DWORD initException=0;
-        const auto snippetResult=safeSnippetInit(snippetInit_,snippetApplicationId_,logDir.c_str(),d12_.Get(),params_,initException);
+        const auto snippetResult=safeSnippetInit(snippetInit_,kFallbackSnippetApplicationId,runtime_.c_str(),d12_.Get(),nullptr,initException);
         if(initException) {
             rememberNgxFailure(createFailure_,NgxFailureStage::Initialize,0,initException);
             setFailure(status,PipelineStage::SnippetInitFailed,static_cast<int>(initException),formatNgxFailure(createFailure_));
@@ -381,9 +382,9 @@ public:
         status.requiredTagCount=4;
         status.failureStage=PipelineStage::None;
         swprintf_s(status.message,
-                   L"NGX core + nvngx_dlssnr D3D12 snippet initialized (appId=0x%08X, snippet=0x%X%s); feature 18 will be created on the first frame",
-                   static_cast<unsigned>(snippetApplicationId_),snippetVersion_,
-                   (reportedApplicationId==0 ? L", fallback app id" : L""));
+                   L"NGX core + nvngx_dlssnr D3D12 snippet initialized (signedAppId=0x%08X, reportedAppId=0x%08X, snippet=0x%X); feature 18 will be created on the first frame",
+                   static_cast<unsigned>(kFallbackSnippetApplicationId),
+                   static_cast<unsigned>(reportedApplicationId),snippetVersion_);
         return true;
     }
 
@@ -451,6 +452,8 @@ public:
         NVSDK_NGX_Parameter_SetF(params_,kMVecScaleX,frame.motionScaleX);
         NVSDK_NGX_Parameter_SetF(params_,kMVecScaleY,frame.motionScaleY);
         NVSDK_NGX_Parameter_SetUI(params_,kDepthInverted,frame.depthInverted?1u:0u);
+        NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertX,0u);
+        NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertY,0u);
         NVSDK_NGX_Parameter_SetUI(params_,kEnabled,1u);
         NVSDK_NGX_Parameter_SetUI(params_,kReset,(reset_||frame.resetHistory)?1u:0u);
         NVSDK_NGX_Parameter_SetUI(params_,kStyle,settings.nrStyle);
@@ -460,9 +463,9 @@ public:
         NVSDK_NGX_Parameter_SetF(params_,kSkinStructure,settings.nrSkinStructure);
         NVSDK_NGX_Parameter_SetUI(params_,kUseAutoMask,settings.nrAutoMask?1u:0u);
         NVSDK_NGX_Parameter_SetUI(params_,kUiCorrection,settings.nrUiCorrection?1u:0u);
-        NVSDK_NGX_Parameter_SetF(params_,kPaperWhite,settings.nrPaperWhite);
-        NVSDK_NGX_Parameter_SetF(params_,kTransferStrength,settings.nrTransferStrength);
-        NVSDK_NGX_Parameter_SetF(params_,kColorStrength,settings.nrColorStrength);
+        // nrPaperWhite/nrTransferStrength/nrColorStrength are compositor-side
+        // controls only. They are not part of the verified Feature-18 NR
+        // parameter namespace and must not be injected into the NGX block.
         setSubrectParameters(frame.width,frame.height);
 
         DWORD exceptionCode=0;
@@ -606,7 +609,7 @@ private:
         d.Width=width; d.Height=height; d.MipLevels=1; d.ArraySize=1; d.Format=format;
         d.SampleDesc.Count=1; d.Usage=D3D11_USAGE_DEFAULT;
         d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
-        d.MiscFlags=D3D11_RESOURCE_MISC_SHARED_NTHANDLE|D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        d.MiscFlags=D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         if(FAILED(d11_->CreateTexture2D(&d,nullptr,&out.d11))) {
             setFailure(status,PipelineStage::GuideResourcesFailed,0,L"Could not create a GPU-shareable D3D11 neural texture");
             return false;
@@ -617,7 +620,7 @@ private:
             return false;
         }
         HANDLE shared=nullptr;
-        if(FAILED(dxgiResource->CreateSharedHandle(nullptr,DXGI_SHARED_RESOURCE_READ|DXGI_SHARED_RESOURCE_WRITE,nullptr,&shared)) || !shared) {
+        if(FAILED(dxgiResource->CreateSharedHandle(nullptr,GENERIC_ALL,nullptr,&shared)) || !shared) {
             setFailure(status,PipelineStage::GuideResourcesFailed,0,L"CreateSharedHandle failed for a neural texture");
             return false;
         }
