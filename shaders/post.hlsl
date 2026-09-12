@@ -17,5 +17,6 @@ float3 NeuralRgb(int2 p){float3 c=Neural.Load(int3(p,0)).rgb;return SourceSrgb!=
  else if(DebugView==5){float conf=1.0-m.b;outc=conf.xxx;}
  else if(DebugView==6)outc=m.rrr;
  else if(DebugView==7){float z=Depth.Load(int3(p,0));outc=z.xxx;}
+ else if(DebugView==8)outc=n;
  Out[id.xy]=float4(outc,c.a);
 }

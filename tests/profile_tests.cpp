@@ -41,9 +41,13 @@ int main(){
     assert(legacyV6.temporalStrength > 0.999f);
     assert(legacyV6.nrIntensity > 0.999f);
     assert(legacyV6.nrTone > 0.999f);
-    assert(legacyV6.nrSkinStructure > -0.001f && legacyV6.nrSkinStructure < 0.001f);
+    assert(legacyV6.nrSkinStructure < -0.999f);
     assert(!legacyV6.nrAutoMask);
     assert(!legacyV6.nrUiCorrection);
+
+    udlss::Settings legacyV7{};
+    assert(udlss::decodeProfile("version=7\nnrSkinStructure=0\n", legacyV7));
+    assert(legacyV7.nrSkinStructure < -0.999f);
 
     // Explicit passthrough remains passthrough across migration.
     udlss::Settings legacyPass{};

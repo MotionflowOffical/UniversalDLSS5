@@ -61,7 +61,7 @@ int main() {
     assert(nearf(d.nrIntensity, 1.0f));
     assert(nearf(d.nrTone, 1.0f));
     assert(nearf(d.nrStructure, 1.0f));
-    assert(nearf(d.nrSkinStructure, 0.0f));
+    assert(nearf(d.nrSkinStructure, -1.0f));
     assert(!d.nrAutoMask);
     assert(!d.nrUiCorrection);
 

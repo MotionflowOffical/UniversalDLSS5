@@ -4,14 +4,14 @@
 
 namespace udlss {
 
-constexpr std::uint32_t kSettingsVersion = 7;
+constexpr std::uint32_t kSettingsVersion = 8;
 
 enum class BackendMode : std::uint32_t { InGameNR = 0, StreamlineDLSS5 = InGameNR, Passthrough = 1, ExternalHostNR = 2 };
 enum class MotionSource : std::uint32_t { Auto = 0, SynthesizedOpticalFlow = 1, Zero = 2 };
 enum class LatencyMode : std::uint32_t { UltraLow = 0, Balanced = 1, Quality = 2 };
 enum class HdrMode : std::uint32_t { Auto = 0, SDR = 1, HDR = 2 };
 enum class DepthGuideMode : std::uint32_t { Auto = 0, SyntheticFar = 1, ForceNormal = 2, ForceInverted = 3 };
-enum class DebugView : std::uint32_t { Final = 0, Original = 1, Split = 2, Difference = 3, Motion = 4, MotionConfidence = 5, ControlMask = 6, Depth = 7 };
+enum class DebugView : std::uint32_t { Final = 0, Original = 1, Split = 2, Difference = 3, Motion = 4, MotionConfidence = 5, ControlMask = 6, Depth = 7, RawNeural = 8 };
 enum class TuningPreset : std::uint32_t { Default = 0, Browser = 1, Game2D = 2, Video = 3, Aggressive = 4 };
 
 struct Settings {
@@ -61,7 +61,7 @@ struct Settings {
     float nrIntensity = 1.00f;
     float nrTone = 1.00f;
     float nrStructure = 1.00f;
-    float nrSkinStructure = 0.00f;
+    float nrSkinStructure = -1.00f;
     float nrPaperWhite = 1.0f;
     float nrTransferStrength = 1.0f;
     float nrColorStrength = 1.0f;

@@ -413,15 +413,34 @@ public:
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D11 shared-fence signal failed");
             return false;
         }
+        // ID3D11DeviceContext4::Signal is ordered on the immediate context,
+        // but explicitly flush the producer batch before making another API
+        // queue wait on that fence. This mirrors the known-good Feature-18
+        // D3D11->D3D12 handoff and avoids a wait on commands still buffered
+        // in the D3D11 runtime.
+        ctx11_->Flush();
         if(FAILED(queue12_->Wait(fence12_.Get(),readyValue))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 queue wait on D3D11 guide fence failed");
             return false;
         }
 
         transitionForNgx(slot.list.Get(),true);
+        const bool creatingFeature = feature_ == nullptr;
         if(!ensureFeature(slot.list.Get(),frame,settings,status)) {
             slot.list->Close();
             return false;
+        }
+        if(creatingFeature) {
+            // CreateFeature records one-time initialization work. A known-good
+            // Feature-18 integration submits and completes that work before the
+            // first EvaluateFeature call rather than recording both into the
+            // same never-yet-executed command list. The resources remain in
+            // their NGX read/UAV states across this one-time boundary.
+            if(!submitFeatureInitialization(slot,status)) return false;
+            if(FAILED(slot.allocator->Reset()) || FAILED(slot.list->Reset(slot.allocator.Get(),nullptr))) {
+                setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 command list reset after feature initialization failed");
+                return false;
+            }
         }
 
         NVSDK_NGX_Parameter_SetD3d12Resource(params_,kColor,input_.d12.Get());
@@ -493,6 +512,36 @@ public:
     const wchar_t* name() const override { return L"NGX DLSS 5 NR (D3D12)"; }
 
 private:
+    bool submitFeatureInitialization(FrameSlot& slot,RuntimeStatus& status) {
+        if(FAILED(slot.list->Close())) {
+            setFailure(status,PipelineStage::FeatureCreateFailed,0,L"D3D12 feature-initialization command list close failed");
+            return false;
+        }
+        ID3D12CommandList* lists[]={slot.list.Get()};
+        queue12_->ExecuteCommandLists(1,lists);
+        const std::uint64_t value=++fenceValue_;
+        if(FAILED(queue12_->Signal(fence12_.Get(),value))) {
+            setFailure(status,PipelineStage::FeatureCreateFailed,0,L"D3D12 feature-initialization completion signal failed");
+            return false;
+        }
+        slot.completionValue=value;
+        if(fence12_->GetCompletedValue()<value) {
+            HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+            if(!event) {
+                setFailure(status,PipelineStage::FeatureCreateFailed,static_cast<int>(GetLastError()),L"Could not create feature-initialization fence event");
+                return false;
+            }
+            const HRESULT hr=fence12_->SetEventOnCompletion(value,event);
+            const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(event,5000):WAIT_FAILED;
+            CloseHandle(event);
+            if(FAILED(hr) || wait!=WAIT_OBJECT_0) {
+                setFailure(status,PipelineStage::FeatureCreateFailed,FAILED(hr)?static_cast<int>(hr):static_cast<int>(wait),L"Timed out waiting for Feature-18 initialization commands");
+                return false;
+            }
+        }
+        return true;
+    }
+
     static std::wstring hex8(std::int32_t value) {
         wchar_t b[16]{};
         swprintf_s(b,L"%08X",static_cast<unsigned>(value));

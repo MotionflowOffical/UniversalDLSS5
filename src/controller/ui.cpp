@@ -394,6 +394,7 @@ const wchar_t* debugViewText(DebugView view) {
     case DebugView::MotionConfidence:return L"Motion confidence";
     case DebugView::ControlMask:return L"Control mask";
     case DebugView::Depth:return L"Depth guide";
+    case DebugView::RawNeural:return L"Raw neural output";
     default:return L"Final output";
     }
 }
@@ -771,7 +772,7 @@ void makeUi() {
     createSlider(IDC_SHARP,0,0);createSlider(IDC_EXPOSURE,1,0);createSlider(IDC_TEMPORAL,0,1);createSlider(IDC_TEXT,1,1);createSlider(IDC_UIP,0,2);createSlider(IDC_MASKSTR,1,2);createSlider(IDC_CLAMP,0,3);createSlider(IDC_REACTIVE,1,3);createSlider(IDC_EDGE,0,4);createSlider(IDC_NR_PAPER,1,4);createSlider(IDC_NR_TRANSFER,0,5);createSlider(IDC_NR_COLOR,1,5);
 
     // Debug tab
-    createSlider(IDC_DEBUG_SPLIT,0,0);makeLabel(L"Debug view",342,355,90,IDC_DEBUG_VIEW_LABEL);g.debugView=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,440,351,170,220,IDC_DEBUG_VIEW);comboAdd(g.debugView,L"Final output");comboAdd(g.debugView,L"Original");comboAdd(g.debugView,L"Original / NR split");comboAdd(g.debugView,L"Difference");comboAdd(g.debugView,L"Motion vectors");comboAdd(g.debugView,L"Motion confidence");comboAdd(g.debugView,L"Control mask");comboAdd(g.debugView,L"Depth guide");
+    createSlider(IDC_DEBUG_SPLIT,0,0);makeLabel(L"Debug view",342,355,90,IDC_DEBUG_VIEW_LABEL);g.debugView=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,440,351,170,220,IDC_DEBUG_VIEW);comboAdd(g.debugView,L"Final output");comboAdd(g.debugView,L"Original");comboAdd(g.debugView,L"Original / NR split");comboAdd(g.debugView,L"Difference");comboAdd(g.debugView,L"Motion vectors");comboAdd(g.debugView,L"Motion confidence");comboAdd(g.debugView,L"Control mask");comboAdd(g.debugView,L"Depth guide");comboAdd(g.debugView,L"Raw neural output");
     makeControl(L"STATIC",L"GPU-only debug views. Normals/albedo from GameGuides are tracked for diagnostics but are not bound to undocumented NR parameters.",SS_LEFT,40,420,560,60,IDC_DEBUG_NOTE);
 
 

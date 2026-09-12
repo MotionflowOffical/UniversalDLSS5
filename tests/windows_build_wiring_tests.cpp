@@ -128,6 +128,14 @@ int main() {
         std::cerr << "NGX backend can retry a failing feature-18 creation every frame\n";
         return 1;
     }
+    // Feature 18 initialization commands must be submitted and completed before
+    // the first EvaluateFeature call. The D3D11 producer signal must also be
+    // flushed before the D3D12 queue waits on it.
+    if (ngxBackend.find("submitFeatureInitialization") == std::string::npos ||
+        ngxBackend.find("ctx11_->Flush()") == std::string::npos) {
+        std::cerr << "Feature-18 create/evaluate lifecycle is not explicitly synchronized\n";
+        return 1;
+    }
 
     const auto streamlineBackend = readFile(root / "src" / "neural" / "streamline_nr.cpp");
     if (streamlineBackend.find("bool initialize(ID3D11Device*") != std::string::npos) {
@@ -400,7 +408,8 @@ int main() {
     const auto postShader = readFile(root / "shaders" / "post.hlsl");
     if (postShader.find("Texture2D<float2> Motion") == std::string::npos ||
         postShader.find("DebugView==2") == std::string::npos ||
-        postShader.find("DebugView==7") == std::string::npos) {
+        postShader.find("DebugView==7") == std::string::npos ||
+        postShader.find("DebugView==8") == std::string::npos) {
         std::cerr << "GPU debug views are not wired into the post shader\n";
         return 1;
     }

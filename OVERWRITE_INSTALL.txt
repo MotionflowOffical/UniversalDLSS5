@@ -1,0 +1,18 @@
+UniversalDLSS5 v0.2.8 - overwrite-ready lifecycle fix
+
+This archive intentionally contains exactly ONE top-level folder:
+    UniversalDLSS5\
+
+To update an existing checkout/source folder:
+1. Close UniversalDLSS5 and any running game using the injector.
+2. Extract this ZIP into the PARENT directory that already contains your
+   UniversalDLSS5 folder.
+3. When Windows asks, choose Replace/Overwrite files in the destination.
+
+Because the archive uses the same UniversalDLSS5 folder name and the full
+fixed source tree, extraction merges into the existing project and replaces
+changed files directly. No separate udlss5_fix2 folder and no manual .patch
+application are required.
+
+The lifecycle/raw-neural-output fixes are already present in the source.
+After extraction, rebuild with BUILD_WINDOWS.bat.
