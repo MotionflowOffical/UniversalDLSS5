@@ -67,6 +67,7 @@ int main() {
     assert(d.nrPasses == 1);
     assert(d.maxFramesInFlight == 6);
     assert(d.uiTheme == UiTheme::System);
+    assert(d.framePacing == FramePacingMode::Synchronized);
 
     Settings ultra = d;
     ultra.latencyMode = LatencyMode::UltraLow;

@@ -4,7 +4,7 @@
 
 namespace udlss {
 
-constexpr std::uint32_t kSettingsVersion = 9;
+constexpr std::uint32_t kSettingsVersion = 10;
 
 enum class BackendMode : std::uint32_t { InGameNR = 0, StreamlineDLSS5 = InGameNR, Passthrough = 1, ExternalHostNR = 2 };
 enum class MotionSource : std::uint32_t { Auto = 0, SynthesizedOpticalFlow = 1, Zero = 2 };
@@ -14,6 +14,7 @@ enum class DepthGuideMode : std::uint32_t { Auto = 0, SyntheticFar = 1, ForceNor
 enum class DebugView : std::uint32_t { Final = 0, Original = 1, Split = 2, Difference = 3, Motion = 4, MotionConfidence = 5, ControlMask = 6, Depth = 7, RawNeural = 8 };
 enum class TuningPreset : std::uint32_t { Default = 0, Browser = 1, Game2D = 2, Video = 3, Aggressive = 4 };
 enum class UiTheme : std::uint32_t { System = 0, Light = 1, Dark = 2 };
+enum class FramePacingMode : std::uint32_t { Synchronized = 0, Adaptive = 1, Asynchronous = 2 };
 
 struct Settings {
     std::uint32_t structVersion = kSettingsVersion;
@@ -39,6 +40,7 @@ struct Settings {
     DepthGuideMode depthMode = DepthGuideMode::Auto;
     DebugView debugView = DebugView::Final;
     UiTheme uiTheme = UiTheme::System;
+    FramePacingMode framePacing = FramePacingMode::Synchronized;
 
     float sharpness = 0.15f;
     float exposure = 1.0f;
@@ -130,6 +132,7 @@ inline void normalize(Settings& s) {
     s.nrPreset = std::min<std::uint32_t>(s.nrPreset, 3);
     s.nrPasses = std::clamp<std::uint32_t>(s.nrPasses, 1, 4);
     if(static_cast<std::uint32_t>(s.uiTheme)>2) s.uiTheme=UiTheme::System;
+    if(static_cast<std::uint32_t>(s.framePacing)>2) s.framePacing=FramePacingMode::Synchronized;
     s.flowSearchRadius = std::clamp<std::uint32_t>(s.flowSearchRadius, 1, 12);
     // Supported GPU kernels are specialized for 1x/2x/4x/8x reduction.
     if (s.flowDownsample <= 1) s.flowDownsample = 1;
@@ -215,6 +218,7 @@ inline void applyPreset(Settings& target, TuningPreset preset) {
     const DepthGuideMode depth = target.depthMode;
     const DebugView debug = target.debugView;
     const UiTheme theme = target.uiTheme;
+    const FramePacingMode framePacing = target.framePacing;
     const std::uint32_t nrPasses = target.nrPasses;
     const std::uint32_t maxFramesInFlight = target.maxFramesInFlight;
     const bool gameDepth = target.useGameDepth;
@@ -230,6 +234,7 @@ inline void applyPreset(Settings& target, TuningPreset preset) {
     target.depthMode = depth;
     target.debugView = debug;
     target.uiTheme = theme;
+    target.framePacing = framePacing;
     target.nrPasses = nrPasses;
     target.maxFramesInFlight = maxFramesInFlight;
     target.useGameDepth = gameDepth;

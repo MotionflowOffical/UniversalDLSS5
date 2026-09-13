@@ -1,4 +1,4 @@
-UniversalDLSS5 v0.2.8 - Stable renderer/scheduler + multipass/UI update
+UniversalDLSS5 v0.2.8 - Modern UI + synchronized neural pacing update
 =====================================================================
 This ZIP contains exactly one top-level folder: UniversalDLSS5\
 
@@ -12,8 +12,10 @@ The fixes are already integrated; no .patch file needs to be applied manually.
 
 This update keeps the working signed Feature-18 contract fix and adds:
 - stable primary-renderer election for multi-process/multi-swapchain applications;
-- non-flickering soft neural scheduler backpressure with a 3-8 slot GPU ring;
+- synchronized frame-matched neural pacing by default, plus Adaptive and Asynchronous modes;
+- non-flickering scheduler backpressure with a 3-8 slot GPU ring;
 - per-slot shared resources so in-flight frames cannot overwrite each other;
-- 1x-4x neural processing, with passes 2-4 isolated as same-frame refinements;
-- System / Light / Dark controller themes and modern owner-drawn controls;
+- 1x-4x neural processing, with passes 2-4 isolated as same-frame refinements inside one frame job;
+- temporal-history protection when only zero motion + synthetic depth are available;
+- a Direct2D/DirectWrite controller with rounded custom controls, clean spacing, responsive scrolling, and System / Light / Dark themes;
 - background process-tree maintenance so opening the controller does not enumerate/inject on every UI tick.

@@ -333,27 +333,25 @@ int main() {
         std::cerr << "Controller does not build the visible app-centric process list\n";
         return 1;
     }
-    if (uiSource.find("IDC_COPY_DIAGNOSTICS") == std::string::npos ||
-        uiSource.find("IDC_SAVE_DIAGNOSTICS") == std::string::npos ||
-        uiSource.find("ES_MULTILINE") == std::string::npos ||
-        uiSource.find("ES_READONLY") == std::string::npos ||
-        uiSource.find("WS_VSCROLL") == std::string::npos ||
+    if (uiSource.find("drawDiagnosticsPage") == std::string::npos ||
+        uiSource.find("BTN_COPY_DIAG") == std::string::npos ||
+        uiSource.find("BTN_SAVE_DIAG") == std::string::npos ||
+        uiSource.find("copyDiagnosticsToClipboard") == std::string::npos ||
+        uiSource.find("saveDiagnosticsToFile") == std::string::npos ||
         uiSource.find("OpenClipboard") == std::string::npos ||
         uiSource.find("WM_SIZE") == std::string::npos ||
         uiSource.find("WM_GETMINMAXINFO") == std::string::npos ||
-        uiSource.find("formatPipelineStages") == std::string::npos) {
-        std::cerr << "Controller is missing resizable/copyable stage diagnostics UI wiring\n";
+        uiSource.find("formatPipelineStages") == std::string::npos ||
+        uiSource.find("ES_MULTILINE") != std::string::npos) {
+        std::cerr << "Controller is missing the resizable custom-rendered/copyable diagnostics page\n";
         return 1;
     }
-    if (uiSource.find("WC_COMBOBOXEXW") == std::string::npos ||
-        uiSource.find("SHGetFileInfoW") == std::string::npos ||
-        uiSource.find("Show all processes") == std::string::npos) {
-        std::cerr << "Controller app picker is missing icon/grouped-process UI wiring\n";
-        return 1;
-    }
-    if (uiSource.find("LoadIconW(nullptr,IDI_APPLICATION)") != std::string::npos ||
-        uiSource.find("MAKEINTRESOURCEW(32512)") == std::string::npos) {
-        std::cerr << "Controller icon fallback can pass an ANSI resource pointer to LoadIconW\n";
+    if (uiSource.find("drawApplicationPage") == std::string::npos ||
+        uiSource.find("HitKind::AppRow") == std::string::npos ||
+        uiSource.find("Show all") == std::string::npos ||
+        uiSource.find("enumerateApplications") == std::string::npos ||
+        uiSource.find("WC_COMBOBOXEXW") != std::string::npos) {
+        std::cerr << "Controller app picker is missing custom grouped-process list wiring\n";
         return 1;
     }
     const auto sharedControlSource = readFile(root / "src" / "common" / "shared_control_win.cpp");
@@ -366,10 +364,10 @@ int main() {
         std::cerr << "RTX architecture compatibility leaked into the injected game bridge\n";
         return 1;
     }
-    if (uiSource.find("Neural model") == std::string::npos ||
-        uiSource.find("Temporal guides") == std::string::npos ||
+    if (uiSource.find("Neural Rendering") == std::string::npos ||
+        uiSource.find("Motion & Temporal Guides") == std::string::npos ||
         uiSource.find("Composition") == std::string::npos ||
-        uiSource.find("Debug") == std::string::npos ||
+        uiSource.find("Debug view") == std::string::npos ||
         uiSource.find("Original / NR split") == std::string::npos ||
         uiSource.find("Depth guide") == std::string::npos ||
         uiSource.find("Reset after temporal gap") == std::string::npos ||
@@ -379,8 +377,8 @@ int main() {
         std::cerr << "Controller is missing v0.2.6 neural/temporal/composition/debug controls\n";
         return 1;
     }
-    if (uiSource.find("Direct in-game NR (recommended)") == std::string::npos ||
-        uiSource.find("Auto: native -> camera+depth -> NVOFA -> safe zero") == std::string::npos ||
+    if (uiSource.find("Direct in-game") == std::string::npos ||
+        uiSource.find("Auto prefers native game motion, then camera+depth, NVOFA, and finally safe zero motion.") == std::string::npos ||
         uiSource.find("Execution location: ") == std::string::npos ||
         uiSource.find("Native motion candidate: ") == std::string::npos ||
         uiSource.find("Camera matrices: ") == std::string::npos) {

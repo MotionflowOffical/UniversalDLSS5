@@ -31,7 +31,8 @@ inline std::string encodeProfile(const Settings& in) {
       << "hdrMode=" << static_cast<unsigned>(s.hdrMode) << '\n'
       << "depthMode=" << static_cast<unsigned>(s.depthMode) << '\n'
       << "debugView=" << static_cast<unsigned>(s.debugView) << '\n'
-      << "uiTheme=" << static_cast<unsigned>(s.uiTheme) << '\n' 
+      << "uiTheme=" << static_cast<unsigned>(s.uiTheme) << '\n'
+      << "framePacing=" << static_cast<unsigned>(s.framePacing) << '\n' 
       << "sharpness=" << s.sharpness << '\n'
       << "exposure=" << s.exposure << '\n'
       << "temporalStrength=" << s.temporalStrength << '\n'
@@ -87,7 +88,7 @@ inline bool decodeProfile(std::string_view text, Settings& out) {
         else if(k=="backend"){std::uint32_t x=0;setU(v,x);s.backend=static_cast<BackendMode>(x>2?2:x);backendSeen=true;} 
         else if(k=="motionSource"){std::uint32_t x=0;setU(v,x);s.motionSource=static_cast<MotionSource>(x>2?0:x);} 
         else if(k=="latencyMode"){std::uint32_t x=0;setU(v,x);s.latencyMode=static_cast<LatencyMode>(x>2?0:x);} 
-        else if(k=="hdrMode"){std::uint32_t x=0;setU(v,x);s.hdrMode=static_cast<HdrMode>(x>2?0:x);} else if(k=="uiTheme"){std::uint32_t x=0;setU(v,x);s.uiTheme=static_cast<UiTheme>(x>2?0:x);} else if(k=="depthMode"){std::uint32_t x=0;setU(v,x);s.depthMode=static_cast<DepthGuideMode>(x>3?0:x);} else if(k=="debugView"){std::uint32_t x=0;setU(v,x);s.debugView=static_cast<DebugView>(x>8?0:x);} 
+        else if(k=="hdrMode"){std::uint32_t x=0;setU(v,x);s.hdrMode=static_cast<HdrMode>(x>2?0:x);} else if(k=="uiTheme"){std::uint32_t x=0;setU(v,x);s.uiTheme=static_cast<UiTheme>(x>2?0:x);} else if(k=="framePacing"){std::uint32_t x=0;setU(v,x);s.framePacing=static_cast<FramePacingMode>(x>2?0:x);} else if(k=="depthMode"){std::uint32_t x=0;setU(v,x);s.depthMode=static_cast<DepthGuideMode>(x>3?0:x);} else if(k=="debugView"){std::uint32_t x=0;setU(v,x);s.debugView=static_cast<DebugView>(x>8?0:x);} 
         else if(k=="sharpness") setF(v,s.sharpness); else if(k=="exposure") setF(v,s.exposure);
         else if(k=="temporalStrength") setF(v,s.temporalStrength); else if(k=="motionScale") setF(v,s.motionScale); else if(k=="motionScaleX") setF(v,s.motionScaleX); else if(k=="motionScaleY") setF(v,s.motionScaleY); else if(k=="staticMotionDeadzone") setF(v,s.staticMotionDeadzone);
         else if(k=="flowConfidenceThreshold") setF(v,s.flowConfidenceThreshold); else if(k=="disocclusionThreshold") setF(v,s.disocclusionThreshold);

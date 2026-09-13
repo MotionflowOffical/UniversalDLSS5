@@ -2,6 +2,7 @@
 #include "d3d11_resource_tracker.hpp"
 #include "d3d11_camera_tracker.hpp"
 #include "udlss/motion_route_policy.hpp"
+#include "udlss/neural_scheduler_policy.hpp"
 #include "udlss/camera_motion_math.hpp"
 #include <d3dcompiler.h>
 #include <filesystem>
@@ -377,7 +378,9 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     if(settings.useControlMask&&guide.controlMask&&guide.controlMaskConventionValid)
         explicitControlMask=guideExtractor_.copyControlMask(guide,nrControlMaskTex_.Get(),width_,height_);
 
-    neural::FrameResources fr{};fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr;fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
+    const auto resolvedMotionSource=route==MotionRoute::Zero?MotionSource::Zero:settings.motionSource;
+    const bool weakGuideReset=shouldForceTemporalResetForWeakGuides(resolvedMotionSource,realDepth,trustedMotion,cameraDepthReady);
+    neural::FrameResources fr{};fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr;fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_||weakGuideReset;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
     // Synthesized/camera/native converter paths already baked global MotionScale
     // and Y inversion into the texture. Adapter-native motion did not, so its
     // complete scale is carried through frameScaleX/Y above.
@@ -385,6 +388,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     st.gameDepthActive=realDepth?1u:0u;st.depthInverted=depthInverted?1u:0u;st.controlMaskActive=(settings.useControlMask&&fr.controlMask)?1u:0u;st.temporalResetThisFrame=fr.resetHistory?1u:0u;
     st.temporalHistoryValid=fr.resetHistory?0u:1u;
     if(guide.cameraCut) wcscpy_s(st.temporalReason,L"Game/adapter camera cut");
+    else if(weakGuideReset) wcscpy_s(st.temporalReason,L"Weak guides: zero motion + synthetic depth; frame-local NR history");
     else if(!hasHistory_) wcscpy_s(st.temporalReason,L"First frame / no previous history");
     else if(forceResetNext_) wcscpy_s(st.temporalReason,L"Motion/backend continuity reset");
     else wcscpy_s(st.temporalReason,L"Continuous history");

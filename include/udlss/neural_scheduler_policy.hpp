@@ -2,9 +2,35 @@
 #include <algorithm>
 #include <cstdint>
 #include <span>
+#include "settings.hpp"
 
 namespace udlss {
 struct NeuralSlotState { std::uint64_t completionValue{}; };
+struct PresentationDecision {
+    bool useCached{};
+    bool waitForCurrent{};
+};
+
+inline PresentationDecision choosePresentation(FramePacingMode mode,bool cacheValid,std::uint32_t outputAgeFrames) {
+    switch(mode) {
+    case FramePacingMode::Synchronized:
+        return {false,true};
+    case FramePacingMode::Adaptive:
+        if(cacheValid && outputAgeFrames<=1) return {true,false};
+        return {false,true};
+    case FramePacingMode::Asynchronous:
+    default:
+        return {cacheValid,false};
+    }
+}
+
+inline bool shouldForceTemporalResetForWeakGuides(MotionSource resolvedMotionSource,
+                                                  bool realDepth,
+                                                  bool trustedMotion,
+                                                  bool cameraMotionReady) {
+    return resolvedMotionSource==MotionSource::Zero && !realDepth && !trustedMotion && !cameraMotionReady;
+}
+
 struct NeuralScheduleDecision {
     int submitSlot{-1};
     std::uint32_t activeSlots{};

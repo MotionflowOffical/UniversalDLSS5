@@ -8,7 +8,7 @@ REQUIRED = [
     'CMakeLists.txt', 'BUILD_WINDOWS.bat', 'README.md', 'THIRD_PARTY.md',
     'include/udlss/settings.hpp', 'include/udlss/shared_control.hpp', 'include/udlss/guide_quality_policy.hpp', 'include/udlss/resource_extraction_policy.hpp', 'include/udlss/game_guides_api.hpp',
     'include/udlss/native_motion_policy.hpp', 'include/udlss/camera_matrix_policy.hpp', 'include/udlss/camera_motion_math.hpp', 'include/udlss/motion_route_policy.hpp',
-    'include/udlss/runtime_policy.hpp', 'include/udlss/injection_policy.hpp',
+    'include/udlss/runtime_policy.hpp', 'include/udlss/injection_policy.hpp', 'include/udlss/neural_scheduler_policy.hpp', 'include/udlss/renderer_selection_policy.hpp',
     'include/udlss/runtime_diagnostics.hpp', 'include/udlss/d3d12_backbuffer_policy.hpp', 'include/udlss/backend_policy.hpp', 'include/udlss/external_host_policy.hpp',
     'src/controller/ui.cpp', 'src/bridge/dxgi_hooks.cpp',
     'src/gpu/d3d11_pipeline.cpp', 'src/gpu/d3d11_guide_extractor.cpp', 'src/gpu/d3d11_resource_tracker.cpp', 'src/gpu/d3d11_resource_tracker.hpp', 'src/gpu/d3d11_camera_tracker.cpp', 'src/gpu/d3d11_camera_tracker.hpp', 'src/gpu/d3d12_on12.cpp', 'src/gpu/nv_optical_flow.cpp',
@@ -17,7 +17,7 @@ REQUIRED = [
     'shaders/motion.hlsl', 'shaders/native_motion_convert.hlsl', 'shaders/camera_motion.hlsl', 'shaders/mask.hlsl', 'shaders/depth_convert.hlsl', 'shaders/post.hlsl', 'shaders/blit.hlsl',
     'runtime/README.txt',
     'tests/guide_quality_policy_tests.cpp', 'tests/ingame_nr_policy_tests.cpp', 'tests/ingame_nr_parameters_tests.cpp', 'tests/streamline_mount_policy_tests.cpp', 'tests/motion_route_policy_tests.cpp', 'tests/camera_motion_math_tests.cpp', 'tests/d3d11_direct_mount_motion_tests.cpp', 'tests/d3d11_depth_tracking_tests.cpp', 'tests/camera_matrix_policy_tests.cpp', 'tests/native_motion_policy_tests.cpp', 'tests/resource_tracker_semantic_tests.cpp', 'tests/resource_extraction_policy_tests.cpp', 'tests/runtime_diagnostics_tests.cpp', 'tests/d3d12_backbuffer_policy_tests.cpp', 'tests/backend_policy_tests.cpp',
-    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp',
+    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp',
     'include/udlss/app_picker_policy.hpp', 'include/udlss/ngx_failure_policy.hpp', 'include/udlss/neural_route_policy.hpp',
     'examples/GameGuidesAdapter/README.md', 'examples/GameGuidesAdapter/template.cpp',
 ]
@@ -158,11 +158,18 @@ if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 16' not in shared:
-    fail('scheduler/multipass diagnostics layout must use control ABI 16')
+if 'kControlAbi = 17' not in shared:
+    fail('synchronized-pacing diagnostics layout must use control ABI 17')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')
+
+for token in ['framePacingMode', 'neuralOutputAgeFrames', 'neuralOutputAgeMs', 'pacingWaitMs']:
+    if token not in shared:
+        fail(f'missing synchronized-pacing runtime diagnostic field: {token}')
+for token in ['settings.framePacing', 'waitForSlotCompletion', 'sourcePresentSeq', 'pacingWaitMs']:
+    if token not in ngx_backend:
+        fail(f'Feature-18 synchronized pacing implementation missing: {token}')
 
 diag = (ROOT / 'include/udlss/runtime_diagnostics.hpp').read_text(encoding='utf-8')
 for token in ['SnippetLoaded', 'SnippetInitialized', 'FeatureCreated', 'FeatureEvaluated', 'OutputComposited']:
@@ -170,9 +177,14 @@ for token in ['SnippetLoaded', 'SnippetInitialized', 'FeatureCreated', 'FeatureE
         fail(f'missing pipeline diagnostic stage: {token}')
 
 ui = (ROOT / 'src/controller/ui.cpp').read_text(encoding='utf-8')
-for token in ['IDC_COPY_DIAGNOSTICS', 'IDC_SAVE_DIAGNOSTICS', 'formatPipelineStages', 'WM_GETMINMAXINFO', 'WC_COMBOBOXEXW', 'Direct in-game NR (recommended)', 'Execution location: ', 'Native motion candidate: ', 'Camera matrices: ']:
+for token in ['D2D1CreateFactory', 'DWriteCreateFactory', 'FillRoundedRectangle', 'drawDiagnosticsPage', 'BTN_COPY_DIAG', 'BTN_SAVE_DIAG', 'formatPipelineStages', 'WM_GETMINMAXINFO', 'Direct in-game', 'Synchronized', 'Adaptive', 'Asynchronous', 'Execution location: ', 'Native motion candidate: ', 'Camera matrices: ']:
     if token not in ui:
-        fail(f'missing redesigned controller UI capability: {token}')
+        fail(f'missing modern Direct2D controller UI capability: {token}')
+for forbidden in ['WC_TABCONTROLW', 'TRACKBAR_CLASSW', 'WC_COMBOBOXW', 'WC_COMBOBOXEXW', 'ES_MULTILINE']:
+    if forbidden in ui:
+        fail(f'legacy child-control UI regressed into the modern controller: {forbidden}')
+if 'd2d1' not in cmake_root or 'dwrite' not in cmake_root:
+    fail('controller target is not linked to Direct2D/DirectWrite')
 
 pipeline = (ROOT / 'src/gpu/d3d11_pipeline.cpp').read_text(encoding='utf-8')
 for shader in ['convert.hlsl','downsample.hlsl','flow.hlsl','nvof_unpack.hlsl','motion.hlsl','mask.hlsl','depth_convert.hlsl','post.hlsl','blit.hlsl']:

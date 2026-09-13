@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <chrono>
+#include <limits>
 #include <filesystem>
 #include <string>
 #include <windows.h>
@@ -220,6 +222,8 @@ struct FrameSlot {
     ComPtr<ID3D12GraphicsCommandList> list;
     std::uint64_t completionValue{};
     std::uint64_t submissionSeq{};
+    std::uint64_t sourcePresentSeq{};
+    std::uint64_t sourceTickMs{};
     SharedTexture input,output,scratch,motion,depth,controlMask;
     bool finalInScratch{};
     void resetTextures(){input.reset();output.reset();scratch.reset();motion.reset();depth.reset();controlMask.reset();finalInScratch=false;}
@@ -397,48 +401,84 @@ public:
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& status) override {
         status.neuralApi=NeuralExecutionApi::D3D12;
         status.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
+        status.framePacingMode=static_cast<std::uint32_t>(settings.framePacing);
+        status.neuralOutputAgeFrames=0;
+        status.neuralOutputAgeMs=0.0f;
+        status.pacingWaitMs=0.0f;
         if(!initialized_ || !params_ || !frame.input || !frame.output || !frame.motion || !frame.depth) return false;
         if(!ensureSharedResources(frame,status)) return false;
 
-        const auto completed=completionFence12_->GetCompletedValue();
+        const std::uint64_t currentPresentSeq=++presentSeq_;
+        const std::uint64_t nowTick=GetTickCount64();
+        auto completed=completionFence12_->GetCompletedValue();
         const bool advancedOutput=consumeLatestCompletedOutput(completed);
-        if(cacheValid_ && cache_) {
-            ctx11_->CopyResource(frame.output,cache_.Get());
-            if(!advancedOutput) {
-                ++reusedNeuralFrames_;
-                status.reusedNeuralOutput=1;
-                status.reusedNeuralFrames=reusedNeuralFrames_;
-            }
-        } else {
-            ctx11_->CopyResource(frame.output,frame.input);
-        }
+        const auto cacheAgeFrames=[&]()->std::uint32_t {
+            if(!cacheValid_ || !cachePresentSeq_ || currentPresentSeq<cachePresentSeq_) return 0;
+            const auto age=currentPresentSeq-cachePresentSeq_;
+            return static_cast<std::uint32_t>(std::min<std::uint64_t>(age,0xFFFFFFFFull));
+        };
+        auto presentation=choosePresentation(settings.framePacing,cacheValid_,cacheAgeFrames());
 
-        std::array<NeuralSlotState,kFrameSlots> slotState{};
-        for(std::size_t i=0;i<kFrameSlots;++i) slotState[i].completionValue=slots_[i].completionValue;
-        const auto maxSlots=std::clamp<std::uint32_t>(settings.maxFramesInFlight,(std::uint32_t)kInitialFrameSlots,(std::uint32_t)kFrameSlots);
-        if(activeSlotCount_<kInitialFrameSlots) activeSlotCount_=kInitialFrameSlots;
-        if(activeSlotCount_>maxSlots) activeSlotCount_=maxSlots;
-        const auto decision=chooseNeuralSlot(slotState,completed,activeSlotCount_,maxSlots);
-        activeSlotCount_=decision.activeSlots;
-        status.queueCapacity=activeSlotCount_;
-        status.queueLimit=maxSlots;
-        for(std::uint32_t i=0;i<activeSlotCount_;++i)
-            if(slots_[i].completionValue && slots_[i].completionValue>completed) ++status.queueDepth;
+        auto presentCachedOrSource=[&]() {
+            if(presentation.useCached && cacheValid_ && cache_) {
+                ctx11_->CopyResource(frame.output,cache_.Get());
+                status.neuralOutputAgeFrames=cacheAgeFrames();
+                status.neuralOutputAgeMs=cacheTickMs_ && nowTick>=cacheTickMs_ ? static_cast<float>(nowTick-cacheTickMs_) : 0.0f;
+                if(!advancedOutput) {
+                    ++reusedNeuralFrames_;
+                    status.reusedNeuralOutput=1;
+                    status.reusedNeuralFrames=reusedNeuralFrames_;
+                }
+            } else {
+                ctx11_->CopyResource(frame.output,frame.input);
+            }
+        };
+        if(!presentation.waitForCurrent) presentCachedOrSource();
+
+        auto selectSlot=[&](std::uint64_t completedValue) {
+            std::array<NeuralSlotState,kFrameSlots> slotState{};
+            for(std::size_t i=0;i<kFrameSlots;++i) slotState[i].completionValue=slots_[i].completionValue;
+            const auto maxSlots=std::clamp<std::uint32_t>(settings.maxFramesInFlight,(std::uint32_t)kInitialFrameSlots,(std::uint32_t)kFrameSlots);
+            if(activeSlotCount_<kInitialFrameSlots) activeSlotCount_=kInitialFrameSlots;
+            if(activeSlotCount_>maxSlots) activeSlotCount_=maxSlots;
+            auto d=chooseNeuralSlot(slotState,completedValue,activeSlotCount_,maxSlots);
+            activeSlotCount_=d.activeSlots;
+            status.queueCapacity=activeSlotCount_;
+            status.queueLimit=maxSlots;
+            status.queueDepth=0;
+            for(std::uint32_t i=0;i<activeSlotCount_;++i)
+                if(slots_[i].completionValue && slots_[i].completionValue>completedValue) ++status.queueDepth;
+            return d;
+        };
+
+        auto decision=selectSlot(completed);
+        if((decision.backpressured || decision.submitSlot<0) && presentation.waitForCurrent) {
+            // Synchronized/adaptive catch-up never replays an arbitrarily stale
+            // frame. Wait for the oldest in-flight job only to free a slot,
+            // then submit and present the *current* source frame.
+            std::uint64_t earliest=std::numeric_limits<std::uint64_t>::max();
+            for(std::uint32_t i=0;i<activeSlotCount_;++i)
+                if(slots_[i].completionValue>completed) earliest=std::min(earliest,slots_[i].completionValue);
+            if(earliest!=std::numeric_limits<std::uint64_t>::max() && !waitForCompletionValue(earliest,10000,status,L"neural queue catch-up")) return false;
+            completed=completionFence12_->GetCompletedValue();
+            consumeLatestCompletedOutput(completed);
+            decision=selectSlot(completed);
+        }
 
         if(decision.backpressured || decision.submitSlot<0) {
             ++schedulerBackpressureFrames_;
             status.schedulerBackpressure=1;
             status.schedulerBackpressureFrames=schedulerBackpressureFrames_;
             status.neuralPassesExecuted=0;
-            // Queue pressure is not a backend failure. The current Present was
-            // already populated above from the latest completed neural result
-            // (or the source frame during first-result warm-up), so no D3D11
-            // wait on the just-submitted D3D12 work is required.
             status.failureStage=PipelineStage::None;
             status.lastResult=1;
             if(cacheValid_) {
+                if(presentation.useCached) {
+                    status.neuralOutputAgeFrames=cacheAgeFrames();
+                    status.neuralOutputAgeMs=cacheTickMs_ && nowTick>=cacheTickMs_ ? static_cast<float>(nowTick-cacheTickMs_) : 0.0f;
+                }
                 markPipelineStage(status.stageMask,PipelineStage::FeatureCreated);
-                wcscpy_s(status.message,L"DLSS 5 queue pressure: presenting latest completed neural output without resetting temporal history");
+                wcscpy_s(status.message,L"DLSS 5 asynchronous queue pressure: presenting the latest completed neural output");
             } else {
                 wcscpy_s(status.message,L"DLSS 5 queue warm-up: using the current source frame until the first neural result completes");
             }
@@ -453,8 +493,6 @@ public:
         }
 
         // Each in-flight command slot owns its own shared guide/output textures.
-        // This prevents a later D3D11 Present from overwriting resources that a
-        // previous D3D12 Feature-18 evaluation is still consuming.
         ctx11_->CopyResource(slot.input.d11.Get(),frame.input);
         ctx11_->CopyResource(slot.motion.d11.Get(),frame.motion);
         ctx11_->CopyResource(slot.depth.d11.Get(),frame.depth);
@@ -542,8 +580,6 @@ public:
             if(NVSDK_NGX_FAILED(refineResult)) {
                 refinementUnavailable_=true;
                 refinementFailureResult_=static_cast<int>(refineResult);
-                // Keep the last successful pass. The failed optional refinement
-                // must never disable the primary Feature-18 path.
                 transitionRefinementAbort(slot.list.Get(),src,dst,pass>2);
                 break;
             }
@@ -568,9 +604,27 @@ public:
         }
         slot.completionValue=doneValue;
         slot.submissionSeq=++submissionSeq_;
-        // Do not wait for this frame's neural result. A later Present consumes
-        // it only after completionFence12_ reports it complete. This keeps the
-        // game queue independent from routine neural latency.
+        slot.sourcePresentSeq=currentPresentSeq;
+        slot.sourceTickMs=nowTick;
+
+        if(presentation.waitForCurrent) {
+            const auto waitStart=std::chrono::steady_clock::now();
+            if(!waitForSlotCompletion(slot,status)) return false;
+            status.pacingWaitMs=static_cast<float>(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-waitStart).count());
+            ID3D11Texture2D* final11=slot.finalInScratch?slot.scratch.d11.Get():slot.output.d11.Get();
+            if(!final11) return false;
+            ctx11_->CopyResource(frame.output,final11);
+            if(cache_) ctx11_->CopyResource(cache_.Get(),final11);
+            cacheValid_=cache_.Get()!=nullptr;
+            cachePresentSeq_=slot.sourcePresentSeq;
+            cacheTickMs_=slot.sourceTickMs;
+            consumedSubmissionSeq_=slot.submissionSeq;
+            status.neuralOutputAgeFrames=0;
+            status.neuralOutputAgeMs=0.0f;
+        } else if(cacheValid_) {
+            status.neuralOutputAgeFrames=cacheAgeFrames();
+            status.neuralOutputAgeMs=cacheTickMs_ && nowTick>=cacheTickMs_ ? static_cast<float>(nowTick-cacheTickMs_) : 0.0f;
+        }
 
         status.failureStage=PipelineStage::None;
         status.lastResult=static_cast<int>(result);
@@ -579,7 +633,7 @@ public:
         status.schedulerBackpressureFrames=schedulerBackpressureFrames_;
         status.reusedNeuralFrames=reusedNeuralFrames_;
         status.queueCapacity=activeSlotCount_;
-        status.queueLimit=maxSlots;
+        status.queueLimit=std::clamp<std::uint32_t>(settings.maxFramesInFlight,(std::uint32_t)kInitialFrameSlots,(std::uint32_t)kFrameSlots);
         status.queueDepth=0;
         const auto afterCompleted=completionFence12_->GetCompletedValue();
         for(std::uint32_t i=0;i<activeSlotCount_;++i)
@@ -587,9 +641,10 @@ public:
         if(status.neuralPassesRequested>1 && executedPasses==1 && refinementUnavailable_) {
             swprintf_s(status.message,L"Direct in-game DLSS 5 active; refinement feature unavailable (0x%08X), safely using 1x temporal pass",(unsigned)refinementFailureResult_);
         } else {
-            swprintf_s(status.message,L"Direct in-game DLSS 5 active through %s; neural passes %u/%u; queue %u/%u",
-                       usingForwarder_?L"signed feature 18 forwarder":L"direct feature 18",
-                       executedPasses,status.neuralPassesRequested,status.queueDepth,status.queueCapacity);
+            const wchar_t* pacing=settings.framePacing==FramePacingMode::Synchronized?L"synchronized":settings.framePacing==FramePacingMode::Adaptive?L"adaptive":L"asynchronous";
+            swprintf_s(status.message,L"Direct in-game DLSS 5 active through %s; %s pacing; neural passes %u/%u; output age %u frame(s); queue %u/%u",
+                       usingForwarder_?L"signed feature 18 forwarder":L"direct feature 18",pacing,
+                       executedPasses,status.neuralPassesRequested,status.neuralOutputAgeFrames,status.queueDepth,status.queueCapacity);
         }
         return true;
     }
@@ -908,6 +963,28 @@ private:
         list->ResourceBarrier((UINT)b.size(),b.data());
     }
 
+    bool waitForCompletionValue(std::uint64_t value,DWORD timeoutMs,RuntimeStatus& status,const wchar_t* reason) {
+        if(!value || completionFence12_->GetCompletedValue()>=value) return true;
+        HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        if(!event) {
+            setFailure(status,PipelineStage::FeatureEvaluateFailed,static_cast<int>(GetLastError()),L"Could not create neural pacing fence event");
+            return false;
+        }
+        const HRESULT hr=completionFence12_->SetEventOnCompletion(value,event);
+        const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(event,timeoutMs):WAIT_FAILED;
+        CloseHandle(event);
+        if(FAILED(hr) || wait!=WAIT_OBJECT_0) {
+            std::wstring message=L"Timed out waiting for "; message+=reason;
+            setFailure(status,PipelineStage::FeatureEvaluateFailed,FAILED(hr)?static_cast<int>(hr):static_cast<int>(wait),message);
+            return false;
+        }
+        return true;
+    }
+
+    bool waitForSlotCompletion(FrameSlot& slot,RuntimeStatus& status) {
+        return waitForCompletionValue(slot.completionValue,10000,status,L"current frame neural output");
+    }
+
     bool consumeLatestCompletedOutput(std::uint64_t completedValue) {
         FrameSlot* latest=nullptr;
         for(auto& slot:slots_) {
@@ -922,6 +999,8 @@ private:
         // producer signal orders this cache copy before D3D12 can overwrite it.
         ctx11_->CopyResource(cache_.Get(),final11);
         cacheValid_=true;
+        cachePresentSeq_=latest->sourcePresentSeq;
+        cacheTickMs_=latest->sourceTickMs;
         consumedSubmissionSeq_=latest->submissionSeq;
         return true;
     }
@@ -971,12 +1050,12 @@ private:
         if(snippetModule_) { FreeLibrary(snippetModule_); snippetModule_=nullptr; }
         if(ngxInitialized_ && d12_) NVSDK_NGX_D3D12_Shutdown1(d12_.Get());
         ngxInitialized_=false;
-        for(auto& slot:slots_) { slot.resetTextures(); slot.list.Reset(); slot.allocator.Reset(); slot.completionValue=0; slot.submissionSeq=0; }
+        for(auto& slot:slots_) { slot.resetTextures(); slot.list.Reset(); slot.allocator.Reset(); slot.completionValue=0; slot.submissionSeq=0; slot.sourcePresentSeq=0; slot.sourceTickMs=0; }
         cache_.Reset();cacheValid_=false;
         producerFence11_.Reset(); producerFence12_.Reset(); completionFence12_.Reset(); ctx11v4_.Reset(); d11v5_.Reset();
         queue12_.Reset(); d12_.Reset(); ctx11_.Reset(); d11_.Reset();
         initialized_=false; ownsD3D12_=false; reset_=true; createAttempted_=false;
-        width_=height_=0; producerFenceValue_=0;completionFenceValue_=0;frameIndex_=0;submissionSeq_=0;consumedSubmissionSeq_=0;schedulerBackpressureFrames_=0;reusedNeuralFrames_=0;activeSlotCount_=kInitialFrameSlots;cacheValid_=false;refinementUnavailable_=false;refinementFailureResult_=0;runtime_.clear(); clearNgxFailure(createFailure_);
+        width_=height_=0; producerFenceValue_=0;completionFenceValue_=0;frameIndex_=0;submissionSeq_=0;consumedSubmissionSeq_=0;presentSeq_=0;cachePresentSeq_=0;cacheTickMs_=0;schedulerBackpressureFrames_=0;reusedNeuralFrames_=0;activeSlotCount_=kInitialFrameSlots;cacheValid_=false;refinementUnavailable_=false;refinementFailureResult_=0;runtime_.clear(); clearNgxFailure(createFailure_);
     }
 
     ComPtr<ID3D11Device> d11_;
@@ -1009,6 +1088,7 @@ private:
     std::wstring runtime_;
     UINT width_{},height_{};
     std::uint64_t producerFenceValue_{},completionFenceValue_{},frameIndex_{},submissionSeq_{},consumedSubmissionSeq_{};
+    std::uint64_t presentSeq_{},cachePresentSeq_{},cacheTickMs_{};
     std::uint64_t schedulerBackpressureFrames_{},reusedNeuralFrames_{};
     std::uint32_t activeSlotCount_{kInitialFrameSlots};
     bool cacheValid_{};

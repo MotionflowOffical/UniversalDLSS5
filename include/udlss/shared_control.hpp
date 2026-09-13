@@ -8,7 +8,7 @@
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 16;
+constexpr std::uint32_t kControlAbi = 17;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
 enum class GraphicsApi : std::uint32_t { Unknown=0, D3D11=11, D3D12=12 };
@@ -57,6 +57,10 @@ struct RuntimeStatus {
     std::uint32_t neuralPassesRequested{1};
     std::uint32_t neuralPassesExecuted{};
     std::uint32_t reusedNeuralOutput{};
+    std::uint32_t framePacingMode{};
+    std::uint32_t neuralOutputAgeFrames{};
+    float neuralOutputAgeMs{};
+    float pacingWaitMs{};
     std::uint32_t schedulerBackpressure{};
     std::uint64_t schedulerBackpressureFrames{};
     std::uint64_t reusedNeuralFrames{};

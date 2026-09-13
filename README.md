@@ -4,12 +4,14 @@
 
 - **Primary-renderer election:** all injected bridge statuses are scored by render area, API, process role, activity and plausible present rate. A 2.5-second freshness grace plus hysteresis prevents helper/overlay swapchains from taking ownership because they publish more frequently.
 - **Single active renderer:** the controller publishes the elected PID through shared control. Other injected processes remain observable but skip neural work until elected.
-- **Soft GPU backpressure:** direct Feature 18 uses a 3-slot ring that can grow to 8 slots. A busy ring is scheduling pressure, not a neural failure, so it no longer forces temporal-history resets or processed/unprocessed flicker.
+- **Frame-matched synchronized pacing (default):** the bridge waits for the Feature-18 result belonging to the current Present before compositing it. Expensive 2x-4x processing lowers delivered FPS instead of replaying stale neural frames and producing long trails.
+- **Adaptive / asynchronous alternatives:** Adaptive may reuse at most a one-frame-old completed result before synchronizing; Asynchronous keeps the maximum-throughput latest-completed policy for users who explicitly prefer it. Diagnostics expose output age and pacing-wait time.
+- **Soft GPU backpressure:** direct Feature 18 uses a 3-slot ring that can grow to 8 slots. Queue pressure is scheduling state rather than a neural failure, so it does not create the previous Feature-18 failure/reset flicker.
 - **Per-slot shared resources:** each in-flight slot owns color/output/scratch/motion/depth/control resources. Later Presents cannot overwrite resources still consumed by D3D12.
-- **Latest completed result:** when the ring is saturated, the compositor reuses the most recent completed neural image (or the source image during first-result warm-up) without invalidating Feature-18 history.
-- **Neural passes 1x-4x:** pass 1 is the normal temporal Feature-18 evaluation. Passes 2-4 use a separate reset-only same-frame refinement feature and ping-pong resources. If the second feature is rejected by a driver/runtime, the primary path safely remains at 1x.
-- **Lower-overhead controller:** process-tree discovery/reinjection runs on a background `std::jthread` at a multi-second cadence; the 500 ms status UI performs shared-memory reads only and avoids replacing unchanged text.
-- **Modern themes:** System, Light and Dark modes use neutral surfaces, a restrained blue accent, owner-drawn rounded buttons/tabs, and DWM title-bar theming.
+- **Weak-guide history protection:** when the only guides are zero motion + synthetic depth with no trusted camera/native motion, frame-to-frame Feature-18 history is reset instead of accumulating unsupported temporal geometry.
+- **Neural passes 1x-4x:** pass 1 is the normal Feature-18 evaluation. Passes 2-4 use a separate reset-only same-frame refinement feature and ping-pong resources, and all requested passes remain one frame-matched job. If the second feature is rejected by a driver/runtime, the primary path safely remains at 1x.
+- **Lower-overhead controller:** process-tree discovery/reinjection runs on a background `std::jthread` at a multi-second cadence; the 500 ms status UI performs shared-memory reads only and redraws when live data changes.
+- **Direct2D/DirectWrite controller:** all visible controls are custom-rendered on one DPI-aware canvas with rounded controls, responsive scrolling, anti-aliased text, and System / Light / Dark neutral themes. Stock Win32 tabs, trackbars, combo boxes, and multiline diagnostics controls are not used.
 
 
 ## v0.2.8 direct in-game NR mount

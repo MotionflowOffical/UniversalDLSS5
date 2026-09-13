@@ -3,7 +3,7 @@
 #include "udlss/profile.hpp"
 int main(){
     udlss::Settings s = udlss::defaultSettings();
-    s.sharpness = 0.42f; s.flowSearchRadius = 9; s.protectUI = false; s.nrIntensity=0.67f; s.nrTone=0.25f; s.nrStructure=1.26f; s.staticMotionDeadzone=0.75f; s.depthMode=udlss::DepthGuideMode::ForceNormal; s.debugView=udlss::DebugView::Split; s.nrPasses=3; s.maxFramesInFlight=7; s.uiTheme=udlss::UiTheme::Dark;
+    s.sharpness = 0.42f; s.flowSearchRadius = 9; s.protectUI = false; s.nrIntensity=0.67f; s.nrTone=0.25f; s.nrStructure=1.26f; s.staticMotionDeadzone=0.75f; s.depthMode=udlss::DepthGuideMode::ForceNormal; s.debugView=udlss::DebugView::Split; s.nrPasses=3; s.maxFramesInFlight=7; s.uiTheme=udlss::UiTheme::Dark; s.framePacing=udlss::FramePacingMode::Adaptive;
     auto text = udlss::encodeProfile(s);
     udlss::Settings out{};
     assert(udlss::decodeProfile(text, out));
@@ -20,6 +20,7 @@ int main(){
     assert(out.nrPasses == 3);
     assert(out.maxFramesInFlight == 7);
     assert(out.uiTheme == udlss::UiTheme::Dark);
+    assert(out.framePacing == udlss::FramePacingMode::Adaptive);
     // Historical profiles used backend=0 for the neural route. v0.2.8 makes
     // the direct in-game mount the preferred neural route, so backend=0 migrates
     // to InGameNR while an explicit backend=2 remains ExternalHostNR.
@@ -57,6 +58,7 @@ int main(){
     assert(legacyV8Queue.maxFramesInFlight == 6);
     assert(legacyV8Queue.nrPasses == 1);
     assert(legacyV8Queue.uiTheme == udlss::UiTheme::System);
+    assert(legacyV8Queue.framePacing == udlss::FramePacingMode::Synchronized);
 
     // Explicit passthrough remains passthrough across migration.
     udlss::Settings legacyPass{};

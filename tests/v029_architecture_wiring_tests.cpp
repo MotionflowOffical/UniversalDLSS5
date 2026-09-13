@@ -51,9 +51,10 @@ int main() {
     ok &= requireToken(ngx, "producerFence12_", "Producer-ready and neural-completion synchronization are not separated");
     ok &= requireToken(ngx, "completionFence12_", "Dedicated D3D12 completion fence is missing");
     ok &= requireToken(ngx, "consumeLatestCompletedOutput", "Async latest-completed output selection is missing");
-    ok &= forbidToken(ngx, "ctx11v4_->Wait(", "Current-frame neural completion still inserts a D3D11 GPU wait");
+    ok &= requireToken(ngx, "waitForSlotCompletion", "Synchronized frame-matched neural wait path is missing");
+    ok &= requireToken(ngx, "settings.framePacing", "Frame-pacing mode is not wired into NGX backend");
+    ok &= requireToken(ngx, "neuralOutputAgeFrames", "Neural output age telemetry is missing");
     ok &= requireToken(ngx, "cacheValid_", "Latest-completed neural output cache is missing");
-    ok &= requireToken(ngx, "presenting latest completed neural output", "Soft backpressure reuse path is missing");
     ok &= forbidToken(ngx, "D3D12 neural command ring is busy; bypassing this frame instead of blocking the render thread",
                       "Old busy-ring hard bypass path is still present");
     ok &= requireToken(ngx, "settings.nrPasses", "Neural multipass control is not wired");
@@ -61,14 +62,21 @@ int main() {
     ok &= requireToken(ngx, "requestedPasses=1", "Safe 1x fallback for unavailable refinement is missing");
 
     ok &= requireToken(settings, "enum class UiTheme", "System/Light/Dark theme setting is missing");
+    ok &= requireToken(settings, "enum class FramePacingMode", "Frame-pacing setting is missing");
     ok &= requireToken(settings, "nrPasses", "Neural pass-count setting is missing");
-    ok &= requireToken(ui, "TCS_OWNERDRAWFIXED", "Modern owner-drawn settings tabs are missing");
-    ok &= requireToken(ui, "drawModernButton", "Modern owner-drawn button path is missing");
-    ok &= requireToken(ui, "drawModernTab", "Modern owner-drawn tab path is missing");
+    ok &= requireToken(ui, "D2D1CreateFactory", "Controller is not rendered through Direct2D");
+    ok &= requireToken(ui, "DWriteCreateFactory", "Controller is not using DirectWrite text");
+    ok &= requireToken(ui, "ID2D1HwndRenderTarget", "Controller is missing its Direct2D HWND render target");
+    ok &= requireToken(ui, "FillRoundedRectangle", "Custom rounded-card/button rendering is missing");
+    ok &= forbidToken(ui, "WC_TABCONTROLW", "Legacy Win32 tab control is still visible in the controller");
+    ok &= forbidToken(ui, "TRACKBAR_CLASSW", "Legacy Win32 trackbar is still visible in the controller");
+    ok &= forbidToken(ui, "WC_COMBOBOXW", "Legacy Win32 combo boxes are still visible in the controller");
+    ok &= forbidToken(ui, "ES_MULTILINE", "Legacy Win32 diagnostics edit control is still visible");
     ok &= requireToken(ui, "DwmSetWindowAttribute", "Modern title-bar theming is missing");
     ok &= requireToken(ui, "Neural passes", "Neural pass-count UI is missing");
-    ok &= requireToken(cmake, "dwmapi", "Controller is not linked with DWM theming support");
-    ok &= requireToken(cmake, "uxtheme", "Controller is not linked with UxTheme support");
+    ok &= requireToken(ui, "Synchronized", "Frame-pacing UI is missing");
+    ok &= requireToken(cmake, "d2d1", "Controller is not linked with Direct2D");
+    ok &= requireToken(cmake, "dwrite", "Controller is not linked with DirectWrite");
 
     ok &= requireToken(shared, "queueDepth", "Queue diagnostics are missing from shared status ABI");
     ok &= requireToken(shared, "neuralPassesExecuted", "Multipass diagnostics are missing from shared status ABI");
