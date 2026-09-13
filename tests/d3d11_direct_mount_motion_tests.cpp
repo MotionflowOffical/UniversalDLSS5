@@ -49,7 +49,7 @@ int main(){
  assert(c.find("explicitControlMask")!=std::string::npos);
  assert(c.find("fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr")!=std::string::npos);
  // Feature-18 changes can be subtle; x10 matches the working diagnostic baseline.
- assert(post.find("abs(processed-c.rgb)*10.0")!=std::string::npos);
+ assert(post.find("abs(processedProxy-base)*10.0")!=std::string::npos);
  const auto refresh=c.find("Refresh the low-resolution luminance history every frame");
  const auto fallback=c.find("if(route==MotionRoute::Nvof||route==MotionRoute::Hlsl)");
  assert(refresh!=std::string::npos && fallback!=std::string::npos && refresh<fallback);

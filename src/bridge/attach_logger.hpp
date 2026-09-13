@@ -22,6 +22,8 @@ enum class AttachLogStage {
     D3D11PipelineInitialized,
     D3D12On12Initialized,
     NeuralProcessingStarted,
+    NvidiaDriverDetected,
+    ColorSpaceChanged,
     Unloading,
     Failure,
 };

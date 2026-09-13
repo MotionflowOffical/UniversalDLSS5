@@ -142,6 +142,18 @@ if(UDLSS_BUILD_TESTS)
   add_executable(injection_lifecycle_wiring_tests tests/injection_lifecycle_wiring_tests.cpp)
   target_compile_definitions(injection_lifecycle_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME injection_lifecycle_wiring_tests COMMAND injection_lifecycle_wiring_tests)
+  add_executable(hdr_policy_tests tests/hdr_policy_tests.cpp)
+  target_link_libraries(hdr_policy_tests PRIVATE udlss_common)
+  add_test(NAME hdr_policy_tests COMMAND hdr_policy_tests)
+  add_executable(nvidia_driver_policy_tests tests/nvidia_driver_policy_tests.cpp)
+  target_link_libraries(nvidia_driver_policy_tests PRIVATE udlss_common)
+  add_test(NAME nvidia_driver_policy_tests COMMAND nvidia_driver_policy_tests)
+  add_executable(hdr_hitman_wiring_tests tests/hdr_hitman_wiring_tests.cpp)
+  target_compile_definitions(hdr_hitman_wiring_tests PRIVATE UDLSS_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME hdr_hitman_wiring_tests COMMAND hdr_hitman_wiring_tests)
+  add_executable(d3d12_guide_lifetime_wiring_tests tests/d3d12_guide_lifetime_wiring_tests.cpp)
+  target_compile_definitions(d3d12_guide_lifetime_wiring_tests PRIVATE UDLSS_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME d3d12_guide_lifetime_wiring_tests COMMAND d3d12_guide_lifetime_wiring_tests)
 endif()
 
 if(WIN32)
@@ -164,11 +176,11 @@ if(WIN32)
     src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp src/bridge/attach_logger.cpp
     src/gpu/d3d11_pipeline.cpp src/gpu/d3d11_guide_extractor.cpp src/gpu/d3d11_resource_tracker.cpp src/gpu/d3d11_camera_tracker.cpp
     src/gpu/d3d12_resource_tracker.cpp src/gpu/game_temporal_guides.cpp src/gpu/d3d12_on12.cpp src/gpu/nv_optical_flow.cpp
-    src/neural/passthrough.cpp src/neural/ingame_nr.cpp src/neural/ngx_nr.cpp src/neural/external_host.cpp src/neural/streamline_nr.cpp
+    src/neural/passthrough.cpp src/neural/ingame_nr.cpp src/neural/nvidia_driver_win.cpp src/neural/ngx_nr.cpp src/neural/external_host.cpp src/neural/streamline_nr.cpp
     src/common/shared_control_win.cpp)
   target_compile_definitions(UniversalDLSS5.Bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(UniversalDLSS5.Bridge PRIVATE
-    udlss_common minhook d3d11 d3d12 dxgi d3dcompiler dxguid shlwapi advapi32)
+    udlss_common minhook d3d11 d3d12 dxgi d3dcompiler dxguid shlwapi advapi32 version)
   if(UDLSS_WITH_STREAMLINE)
     target_compile_definitions(UniversalDLSS5.Bridge PRIVATE UDLSS_WITH_STREAMLINE=1)
     target_include_directories(UniversalDLSS5.Bridge PRIVATE ${UDLSS_STREAMLINE_ROOT}/include)
@@ -274,7 +286,10 @@ if(WIN32)
     install(FILES "${UDLSS_STREAMLINE_ROOT}/license.txt"
       DESTINATION THIRD_PARTY_LICENSES RENAME "NVIDIA-Streamline-UPSTREAM-LICENSE.txt")
   endif()
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/NVIDIA_RUNTIME_SETUP.md" DESTINATION docs)
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/NVIDIA_RUNTIME_SETUP.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/V0.3.1_HDR_HITMAN_COMPAT.md"
+    DESTINATION docs)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/UniversalDLSS5.png" DESTINATION resources)
 
   set(CPACK_PACKAGE_NAME "UniversalDLSS5")

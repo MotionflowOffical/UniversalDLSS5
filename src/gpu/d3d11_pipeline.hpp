@@ -7,6 +7,7 @@
 #include "d3d11_guide_extractor.hpp"
 #include "udlss/camera_motion_math.hpp"
 #include "udlss/motion_route_policy.hpp"
+#include "swapchain_color.hpp"
 #include <d3d11_1.h>
 #include <wrl/client.h>
 #include <string>
@@ -16,11 +17,11 @@ public:
  D3D11Pipeline()=default;~D3D11Pipeline();
  bool initialize(ID3D11Device* device,ID3D11DeviceContext* context,const std::wstring& moduleDir,RuntimeStatus& status);
  void setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queue);
- bool process(ID3D11Texture2D* backbuffer,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status,const GuideProbeResult* externalGuide=nullptr);
+ bool process(ID3D11Texture2D* backbuffer,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status,const GuideProbeResult* externalGuide=nullptr,const SwapchainColorContext* colorContext=nullptr);
  void reset();
  void retryNeural();
 private:
- struct Params {std::uint32_t width,height,downsample,radius;float exposure,motionScale,confidence,textProtection;float uiProtection,edgeThreshold,sharpness,reactive;float controlMaskStrength,historyClamp,disocclusion,temporal;std::uint32_t invertY,hasHistory,pad0,pad1;float staticDeadzone,motionScaleX,motionScaleY,debugSplit;std::uint32_t debugView,depthMode,sourceSrgb,useControlMask;};
+ struct Params {std::uint32_t width,height,downsample,radius;float exposure,motionScale,confidence,textProtection;float uiProtection,edgeThreshold,sharpness,reactive;float controlMaskStrength,historyClamp,disocclusion,temporal;std::uint32_t invertY,hasHistory,pad0,pad1;float staticDeadzone,motionScaleX,motionScaleY,debugSplit;std::uint32_t debugView,depthMode,sourceSrgb,useControlMask;std::uint32_t colorEncoding,hdrActive;float hdrPaperWhite,hdrMaxNits;};
  bool createShaders(RuntimeStatus&);bool runComputeWithConstants(ID3D11ComputeShader*,ID3D11ShaderResourceView*const*,UINT,ID3D11UnorderedAccessView*,UINT,UINT,ID3D11Buffer*);bool ensureResources(const D3D11_TEXTURE2D_DESC&,const Settings&,RuntimeStatus&);bool ensureBackend(const Settings&,const std::wstring&,RuntimeStatus&);bool runCompute(ID3D11ComputeShader*,ID3D11ShaderResourceView*const*,UINT,ID3D11UnorderedAccessView*,UINT,UINT);bool drawSrv(ID3D11ShaderResourceView*,ID3D11RenderTargetView*,UINT,UINT);bool blit(ID3D11Texture2D*,RuntimeStatus&);void releaseViews();
  Microsoft::WRL::ComPtr<ID3D12Device> nativeD12_;Microsoft::WRL::ComPtr<ID3D12CommandQueue> nativeQueue12_;
  Microsoft::WRL::ComPtr<ID3D11Device> device_;Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;Microsoft::WRL::ComPtr<ID3D11Device1> device1_;Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context1_;Microsoft::WRL::ComPtr<ID3DDeviceContextState> ownState_;

@@ -158,8 +158,8 @@ if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 18' not in shared:
-    fail('game-guide diagnostics layout must use control ABI 18')
+if 'kControlAbi = 19' not in shared:
+    fail('HDR/driver diagnostics layout must use control ABI 19')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')
@@ -170,6 +170,30 @@ for token in ['framePacingMode', 'neuralOutputAgeFrames', 'neuralOutputAgeMs', '
 for token in ['settings.framePacing', 'waitForSlotCompletion', 'sourcePresentSeq', 'pacingWaitMs']:
     if token not in ngx_backend:
         fail(f'Feature-18 synchronized pacing implementation missing: {token}')
+
+# v0.3.1 HDR/color-space and Hitman compatibility invariants.
+swapchain_color = (ROOT / 'src/gpu/swapchain_color.hpp').read_text(encoding='utf-8', errors='ignore')
+dxgi_hooks = (ROOT / 'src/bridge/dxgi_hooks.cpp').read_text(encoding='utf-8', errors='ignore')
+post_shader = (ROOT / 'shaders/post.hlsl').read_text(encoding='utf-8', errors='ignore')
+convert_shader = (ROOT / 'shaders/convert.hlsl').read_text(encoding='utf-8', errors='ignore')
+driver_policy = (ROOT / 'include/udlss/nvidia_driver_policy.hpp').read_text(encoding='utf-8', errors='ignore')
+for token in ['GetColorSpace1', 'Rgb10A2', 'Float16', 'Hdr10Pq', 'ScRgb']:
+    if token not in swapchain_color:
+        fail(f'HDR swapchain policy missing: {token}')
+for token in ['hookSetColorSpace', 'hookSetHdrMeta', 'GetDeviceRemovedReason', 'colorPipelineStable']:
+    if token not in dxgi_hooks:
+        fail(f'HDR/Hitman DXGI safety wiring missing: {token}')
+for token in ['PqToNits', 'HdrToProxy']:
+    if token not in convert_shader:
+        fail(f'HDR input conversion missing: {token}')
+for token in ['NitsToPq', 'Rec709To2020', 'HdrPaperWhite']:
+    if token not in post_shader:
+        fail(f'HDR output reconstruction missing: {token}')
+if 'knownDirectFeature18CrashRisk' not in driver_policy:
+    fail('known direct Feature-18 driver crash-risk policy missing')
+for token in ['swapchainFormat', 'swapchainColorSpace', 'hdrActive', 'hdrMaxNits', 'deviceRemovedReason', 'nvidiaDriverVersion']:
+    if token not in shared:
+        fail(f'HDR/driver RuntimeStatus field missing: {token}')
 
 diag = (ROOT / 'include/udlss/runtime_diagnostics.hpp').read_text(encoding='utf-8')
 for token in ['SnippetLoaded', 'SnippetInitialized', 'FeatureCreated', 'FeatureEvaluated', 'OutputComposited']:

@@ -35,6 +35,8 @@ const wchar_t* label(AttachLogStage stage){
     case AttachLogStage::D3D11PipelineInitialized:return L"D3D11 pipeline initialized";
     case AttachLogStage::D3D12On12Initialized:return L"D3D12/D3D11On12 staging pipeline initialized";
     case AttachLogStage::NeuralProcessingStarted:return L"Neural processing started";
+    case AttachLogStage::NvidiaDriverDetected:return L"NVIDIA driver detected";
+    case AttachLogStage::ColorSpaceChanged:return L"Swapchain color space / HDR mode changed";
     case AttachLogStage::Unloading:return L"Bridge unloading";
     case AttachLogStage::Failure:return L"Failure";
     default:return L"Unknown";

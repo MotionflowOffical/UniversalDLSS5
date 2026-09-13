@@ -238,7 +238,7 @@ bool D3D11Pipeline::blit(ID3D11Texture2D*bb,RuntimeStatus&st){
     return drawSrv(postSrv_.Get(),rtv.Get(),width_,height_);
 }
 
-bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st,const GuideProbeResult* externalGuide){
+bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st,const GuideProbeResult* externalGuide,const SwapchainColorContext* colorContext){
     if(!bb||!settings.enabled)return false;
     Settings effective=settings;const auto flowTuning=effectiveFlowTuning(settings);effective.flowDownsample=flowTuning.downsample;effective.flowSearchRadius=flowTuning.searchRadius;
     D3D11_TEXTURE2D_DESC desc{};bb->GetDesc(&desc);
@@ -282,14 +282,16 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     auto t0=std::chrono::high_resolution_clock::now();bool ok=true;
     if(desc.SampleDesc.Count>1)context_->ResolveSubresource(sourceCopy_.Get(),0,bb,0,desc.Format);else context_->CopyResource(sourceCopy_.Get(),bb);
 
-    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.sourceSrgb=isSrgbFormat(desc.Format)?1u:0u;p.useControlMask=settings.useControlMask?1u:0u;
+    const ColorEncoding colorEncoding=colorContext?colorContext->decision.encoding:(isSrgbFormat(desc.Format)?ColorEncoding::SdrSrgb:ColorEncoding::SdrLinear);
+    const bool hdrActive=colorContext&&colorContext->decision.hdrActive&&colorContext->decision.supported;
+    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.sourceSrgb=colorEncoding==ColorEncoding::SdrSrgb?1u:0u;p.useControlMask=settings.useControlMask?1u:0u;p.colorEncoding=(std::uint32_t)colorEncoding;p.hdrActive=hdrActive?1u:0u;p.hdrPaperWhite=colorContext?colorContext->paperWhiteNits:203.0f;p.hdrMaxNits=colorContext?colorContext->maxNits:1000.0f;
     auto uploadMain=[&](){D3D11_MAPPED_SUBRESOURCE m{};if(FAILED(context_->Map(cb_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,&p,sizeof(p));context_->Unmap(cb_.Get(),0);return true;};
     auto uploadBuffer=[&](ID3D11Buffer* buffer,const void* data,size_t bytes){D3D11_MAPPED_SUBRESOURCE m{};if(!buffer||FAILED(context_->Map(buffer,0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,data,bytes);context_->Unmap(buffer,0);return true;};
     if(!uploadMain()){restore();return false;}
     {ID3D11ShaderResourceView*s[]={sourceSrv_.Get()};ok&=runCompute(convert_.Get(),s,1,currentUav_.Get(),width_,height_);}
-    // Feature 18's verified SDR contract consumes stored UNORM SDR values.
-    // A *_SRGB source SRV is implicitly decoded by D3D11 when building
-    // current_, so re-encode only for the RGBA8 neural proxy.
+    // Feature 18 consumes a bounded display-referred proxy. SDR follows the
+    // established UNORM contract; HDR10/scRGB are converted to a reversible
+    // paper-white proxy so the neural stage never clips the HDR backbuffer.
     p.exposure=1.0f;p.pad0=1u;p.pad1=p.sourceSrgb;uploadMain();
     {ID3D11ShaderResourceView*s[]={currentSrv_.Get()};ok&=runCompute(convert_.Get(),s,1,nrInput8Uav_.Get(),width_,height_);}
     p.pad0=0u;p.pad1=0u;uploadMain();

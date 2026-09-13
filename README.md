@@ -14,6 +14,15 @@
 
 The installer and portable release deliberately do **not** include NVIDIA proprietary runtime binaries. See [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) for the detailed setup and security notes.
 
+### v0.3.1 HDR / color-space compatibility
+
+- **Actual swapchain detection:** `Auto` follows the game's DXGI color space and backbuffer format rather than the monitor capability or Windows HDR toggle. HDR10 PQ/BT.2020 and linear scRGB are detected explicitly.
+- **HDR-preserving neural proxy:** HDR is decoded to an FP16 linear working image, mapped to a bounded paper-white proxy for Feature 18, then the bounded neural change is applied back to the original high-range image before re-encoding to the game's HDR contract.
+- **Mode-change safety:** fullscreen, `SetColorSpace1`, HDR metadata, `ResizeBuffers`, and `ResizeBuffers1` changes reset the color/neural state and require several stable Presents before processing resumes. This is intended to handle games that switch display mode during startup or Alt-Tab.
+- **Driver compatibility guard:** exact NVIDIA user-mode driver file versions known to be risky for the direct Feature-18 D3D12 route are blocked from that direct route by default; Streamline/external-host fallback remains available. **Attempt unsupported hardware** can explicitly override the guard.
+- **Device-loss evidence:** failed Presents now log both the DXGI HRESULT and `GetDeviceRemovedReason()` so a remaining Hitman failure can be distinguished from a CPU-side hook failure.
+- See [`docs/V0.3.1_HDR_HITMAN_COMPAT.md`](docs/V0.3.1_HDR_HITMAN_COMPAT.md).
+
 ### v0.3.1 D3D12 queue/backbuffer safety
 
 - Late-injected D3D12 games no longer use the most recently observed same-device DIRECT queue. UniversalDLSS5 tracks command lists that transition the swapchain backbuffers and requires repeated evidence that those lists execute on the same DIRECT queue before processing begins.
@@ -24,10 +33,10 @@ The installer and portable release deliberately do **not** include NVIDIA propri
 
 ## Real game motion/depth guides and safer attach
 
-- **Game-supplied guides first:** when a game already submits DLSS/NGX or Streamline temporal inputs, the bridge captures the game's own depth, motion-vector scale, reset/camera-cut state and resource extent and reuses those guides for Neural Rendering. UniversalDLSS5 suppresses capture around its own NGX/Streamline calls so it cannot mistake its generated resources for game resources.
+- **Game-supplied guides first, with lifetime validation:** when a game submits DLSS/NGX or Streamline temporal inputs, the bridge captures depth/motion metadata, scale, reset/camera-cut state and resource extent. On D3D12, a game-owned resource is consumed at Present only when the provider explicitly guarantees that it remains valid through Present; transient NGX inputs are reported for diagnostics but are not wrapped later after their lifetime may have ended. UniversalDLSS5 suppresses capture around its own NGX/Streamline calls so it cannot mistake its generated resources for game resources.
 - **D3D12 guide tracking:** D3D12 resource-barrier activity is tracked after the primary swapchain becomes stable. Conservative scoring can automatically select a stable scene-depth resource at internal/dynamic resolution. Heuristic D3D12 motion candidates remain diagnostic-only unless their convention is known; an unknown velocity encoding is safer to reject than to feed incorrect motion into Feature 18.
 - **D3D11 dynamic-resolution tracking:** native depth/motion candidates no longer need to exactly match the presentation resolution. Candidate stability, aspect ratio, write/read behavior and internal render size are scored across frames, then guide shaders resample them to output resolution.
-- **Guide priority:** explicit GameGuides adapter -> game NGX inputs -> game Streamline tags -> D3D12 tracker -> D3D11 tracker -> camera/depth reconstruction -> optical flow -> zero motion.
+- **Guide priority:** explicit GameGuides adapter -> game-supplied guides with a safe lifetime -> D3D12 tracker -> D3D11 tracker -> camera/depth reconstruction -> optical flow -> zero motion. Ephemeral D3D12 NGX/Streamline inputs remain visible in diagnostics instead of being touched after their declared lifetime.
 - **Safe attach:** graphics-heavy D3D12 initialization is delayed until a real direct queue and a stable primary Present stream have been observed. The injector now writes `%LOCALAPPDATA%\UniversalDLSS5\logs\inject-<PID>.log` before loading any bridge code, and each started bridge writes a staged `attach-<PID>.log` in the same folder. The **Diagnostics -> Open attach logs** action opens that folder. If a title such as Hitman fails before the bridge starts, use the injector log; if it fails later, the attach log shows the last completed graphics/neural stage.
 - **Global appearance:** System/Light/Dark is a controller preference rather than a per-game profile. Switching target applications or restarting the controller preserves the selected appearance.
 

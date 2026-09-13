@@ -11,7 +11,7 @@ public:
  D3D12On12Pipeline()=default;
  ~D3D12On12Pipeline();
  bool initialize(ID3D12CommandQueue* queue,const std::wstring& moduleDir,RuntimeStatus& status);
- bool process(IDXGISwapChain* swap,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status);
+ bool process(IDXGISwapChain* swap,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status,const SwapchainColorContext* colorContext=nullptr);
  void reset();
  void retryNeural();
 private:

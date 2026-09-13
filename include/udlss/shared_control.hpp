@@ -8,7 +8,7 @@
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 18;
+constexpr std::uint32_t kControlAbi = 19;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
 enum class GraphicsApi : std::uint32_t { Unknown=0, D3D11=11, D3D12=12 };
@@ -70,6 +70,18 @@ struct RuntimeStatus {
     std::uint32_t schedulerBackpressure{};
     std::uint64_t schedulerBackpressureFrames{};
     std::uint64_t reusedNeuralFrames{};
+    std::uint32_t swapchainFormat{};
+    std::uint32_t swapchainColorSpace{};
+    std::uint32_t hdrActive{};
+    std::uint32_t hdrSupported{1};
+    std::uint32_t hdrEncoding{};
+    std::uint32_t hdrTransitionCount{};
+    float hdrPaperWhiteNits{};
+    float hdrMaxNits{};
+    std::int32_t lastPresentResult{};
+    std::int32_t deviceRemovedReason{};
+    std::uint32_t nvidiaDriverRisk{};
+    wchar_t nvidiaDriverVersion[32]{};
     wchar_t temporalReason[96]{};
     wchar_t backendName[64]{};
     wchar_t flowName[96]{};

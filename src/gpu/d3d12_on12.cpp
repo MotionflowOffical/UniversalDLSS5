@@ -107,7 +107,7 @@ bool D3D12On12Pipeline::submitBackbufferCopy(ID3D12Resource* bb,bool intoOwned,R
     return true;
 }
 
-bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::wstring&runtime,RuntimeStatus&st){
+bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::wstring&runtime,RuntimeStatus&st,const SwapchainColorContext* colorContext){
     if(!swap||!on12_||!s.allowD3D11On12)return false;
     bridge::setCrashStage(bridge::CrashStage::BackbufferAcquire);
     ComPtr<IDXGISwapChain3> s3;if(FAILED(swap->QueryInterface(IID_PPV_ARGS(&s3))))return false;
@@ -128,7 +128,22 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
     GuideProbeResult externalGuide{};
     FrameWrappedGuide depthWrap{},motionWrap{};
     const auto captured=snapshotGameTemporalGuides(d12_.Get(),GetTickCount64());
-    if(captured){
+    // Never import a transient game-owned D3D12 temporal resource at Present
+    // unless its provider explicitly guarantees that the resource remains valid
+    // through Present. NGX Evaluate inputs are often only valid around the
+    // evaluation call and engines may alias/reuse them immediately afterwards.
+    // Observing them is still useful for diagnostics, but wrapping such a
+    // resource later through D3D11On12 can corrupt the game's resource lifetime.
+    const bool capturedPresentSafe=captured&&captured.validUntilPresent;
+    if(captured&&!capturedPresentSafe){
+        std::wstring provider=captured.provider.empty()?L"Game temporal guide":captured.provider;
+        provider+=L" (observed, lifetime not Present-safe)";
+        wcsncpy_s(st.guideAdapterName,provider.c_str(),_TRUNCATE);
+        if(captured.motion12){st.guideMotionWidth=captured.motionWidth;st.guideMotionHeight=captured.motionHeight;st.guideMotionConfidence=captured.confidence;}
+        if(captured.depth12){st.guideDepthWidth=captured.depthWidth;st.guideDepthHeight=captured.depthHeight;st.guideDepthConfidence=captured.confidence;}
+        wcsncpy_s(st.guideFields,L"D3D12 temporal inputs detected; deferred because provider lifetime ends before Present",_TRUNCATE);
+    }
+    if(capturedPresentSafe){
         externalGuide.source=captured.source;externalGuide.provider=captured.provider;externalGuide.cameraCut=captured.cameraCut;
         if(s.useGameDepth&&captured.depth12&&guideExtentAspectCompatible(captured.depthWidth,captured.depthHeight,width_,height_)){
             auto state=globalD3D12ResourceTracker().currentState(captured.depth12.Get(),captured.depthState);
@@ -136,7 +151,7 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
                 externalGuide.depth=depthWrap.wrapped;externalGuide.depthViewFormat=captured.depthFormat;externalGuide.depthInverted=captured.depthInverted;externalGuide.depthConventionKnown=captured.depthConventionKnown;externalGuide.depthWidth=captured.depthWidth;externalGuide.depthHeight=captured.depthHeight;externalGuide.depthConfidence=captured.confidence;
             }
         }
-        if(captured.motion12&&captured.motionConventionKnown&&guideExtentAspectCompatible(captured.motionWidth,captured.motionHeight,width_,height_)){
+        if(s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&guideExtentAspectCompatible(captured.motionWidth,captured.motionHeight,width_,height_)){
             auto state=globalD3D12ResourceTracker().currentState(captured.motion12.Get(),captured.motionState);
             if(wrapReadOnlyGuide(on12_.Get(),captured.motion12.Get(),state,motionWrap)){
                 externalGuide.motion=motionWrap.wrapped;externalGuide.motionConventionValid=true;externalGuide.motionEncoding=NativeMotionEncoding::PixelCurrentToPrevious;externalGuide.motionScaleX=captured.motionToPixelScaleX;externalGuide.motionScaleY=captured.motionToPixelScaleY;externalGuide.motionWidth=captured.motionWidth;externalGuide.motionHeight=captured.motionHeight;externalGuide.motionConfidence=captured.confidence;
@@ -156,7 +171,7 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
     bridge::setCrashStage(bridge::CrashStage::On12Acquire);
     on12_->AcquireWrappedResources(acquired.data(),(UINT)acquired.size());
     bridge::setCrashStage(bridge::CrashStage::NeuralProcess);
-    const bool ok=pipeline_.process(ownedColor11_.Get(),s,runtime,st,(externalGuide.depth||externalGuide.motion)?&externalGuide:nullptr);
+    const bool ok=pipeline_.process(ownedColor11_.Get(),s,runtime,st,(externalGuide.depth||externalGuide.motion)?&externalGuide:nullptr,colorContext);
     if(diagnosticMotionCandidate.score>st.nativeMotionCandidateScore){st.nativeMotionCandidateId=diagnosticMotionCandidate.stableId;st.nativeMotionCandidateScore=diagnosticMotionCandidate.score;}
     bridge::setCrashStage(bridge::CrashStage::On12Release);
     on12_->ReleaseWrappedResources(acquired.data(),(UINT)acquired.size());

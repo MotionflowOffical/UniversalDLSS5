@@ -1,4 +1,5 @@
 #include "backend.hpp"
+#include "nvidia_driver_win.hpp"
 #include <filesystem>
 #include <string>
 
@@ -12,6 +13,8 @@ public:
         if(inner_){destroyBackend(inner_);inner_=nullptr;}
         status.neuralLocation=NeuralExecutionLocation::InGame;
         status.neuralBackendKind=NeuralBackendKind::Unknown;
+        driver_=queryNvidiaDriverInfo();
+        if(driver_.found){wcsncpy_s(status.nvidiaDriverVersion,driver_.text.c_str(),_TRUNCATE);status.nvidiaDriverRisk=driver_.directFeature18Risk?1u:0u;}
 
         const std::filesystem::path r(runtime);
         std::error_code ec;
@@ -31,6 +34,14 @@ public:
         }
 
         RuntimeStatus ngxStatus=status;
+        if(driver_.directFeature18Risk&&!settings.attemptUnsupportedHardware){
+            ngxStatus.failureStage=PipelineStage::FeatureCreateFailed;
+            wcscpy_s(ngxStatus.message,L"Direct Feature 18 disabled on this NVIDIA driver because it is a known D3D12 crash-risk route. Install the Streamline DLSS-NR runtime, use a known-good driver, or enable Attempt unsupported hardware to override.");
+            status=ngxStatus;
+            status.neuralLocation=NeuralExecutionLocation::InGame;
+            status.neuralBackendKind=NeuralBackendKind::SignedFeature18;
+            return false;
+        }
         Backend* ngx=createNgxNR();
         if(ngx && ngx->initialize(context,runtime,settings,ngxStatus)){
             inner_=ngx; status=ngxStatus; status.neuralLocation=NeuralExecutionLocation::InGame;
@@ -49,6 +60,7 @@ public:
         if(!inner_) return false;
         const bool ok=inner_->evaluate(context,frame,settings,status);
         status.neuralLocation=NeuralExecutionLocation::InGame;
+        if(driver_.found){wcsncpy_s(status.nvidiaDriverVersion,driver_.text.c_str(),_TRUNCATE);status.nvidiaDriverRisk=driver_.directFeature18Risk?1u:0u;}
         if(status.neuralBackendKind==NeuralBackendKind::Unknown)
             status.neuralBackendKind=std::wstring_view(inner_->name()).find(L"Streamline")!=std::wstring_view::npos ? NeuralBackendKind::Streamline1004 : NeuralBackendKind::SignedFeature18;
         return ok;
@@ -57,6 +69,7 @@ public:
     const wchar_t* name() const override { return inner_?inner_->name():L"Direct in-game DLSS 5 NR"; }
 private:
     Backend* inner_{};
+    NvidiaDriverInfo driver_{};
 };
 
 Backend* createInGameNR(){ return new InGameNR; }
