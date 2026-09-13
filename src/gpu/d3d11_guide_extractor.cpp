@@ -40,7 +40,9 @@ const wchar_t* sourceName(GameGuideSource s){
 D3D11GuideExtractor::~D3D11GuideExtractor(){if(adapter_)FreeLibrary((HMODULE)adapter_);}
 bool D3D11GuideExtractor::initialize(ID3D11Device* d,ID3D11DeviceContext* c){device_=d;context_=c;return device_&&context_;}
 void D3D11GuideExtractor::tryLoadAdapter(){
-    if(adapter_||getFrame_)return;const auto dir=gameDir();if(dir.empty())return;
+    if(adapter_||getFrame_||adapterProbeAttempted_)return;
+    adapterProbeAttempted_=true;
+    const auto dir=gameDir();if(dir.empty())return;
     const auto path=fs::path(dir)/L"UniversalDLSS5.GameGuides.dll";
     std::error_code ec;if(!fs::is_regular_file(path,ec))return;
     HMODULE m=LoadLibraryW(path.c_str());if(!m)return;

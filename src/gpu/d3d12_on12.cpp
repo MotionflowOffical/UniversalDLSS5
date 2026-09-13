@@ -3,7 +3,7 @@
 #include "game_temporal_guides.hpp"
 #include "../bridge/attach_logger.hpp"
 #include "udlss/guide_candidate_policy.hpp"
-#include <vector>
+#include <array>
 #include <algorithm>
 
 using Microsoft::WRL::ComPtr;
@@ -74,12 +74,12 @@ bool D3D12On12Pipeline::waitCopyContext(CopyContext& c,RuntimeStatus& st){
 bool D3D12On12Pipeline::ensureOwnedColor(const D3D12_RESOURCE_DESC& bbDesc,RuntimeStatus& st){
     if(ownedColor12_&&width_==bbDesc.Width&&height_==bbDesc.Height&&format_==bbDesc.Format)return true;
     ownedColor11_.Reset();ownedColor12_.Reset();pipeline_.reset();
-    D3D12_RESOURCE_DESC d=bbDesc;d.Flags|=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;d.Flags&=~D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_RESOURCE_DESC d=bbDesc;d.Flags|=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;d.Flags&=~(D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL|D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
     D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CPUPageProperty=D3D12_CPU_PAGE_PROPERTY_UNKNOWN;heap.MemoryPoolPreference=D3D12_MEMORY_POOL_UNKNOWN;heap.CreationNodeMask=1;heap.VisibleNodeMask=1;
     if(FAILED(d12_->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&ownedColor12_)))){
         wcscpy_s(st.message,L"Could not create injector-owned D3D12 staging color");return false;
     }
-    D3D11_RESOURCE_FLAGS flags{};flags.BindFlags=D3D11_BIND_RENDER_TARGET;
+    D3D11_RESOURCE_FLAGS flags{};flags.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
     if(FAILED(on12_->CreateWrappedResource(ownedColor12_.Get(),&flags,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COMMON,IID_PPV_ARGS(&ownedColor11_)))){
         ownedColor12_.Reset();wcscpy_s(st.message,L"Could not wrap injector-owned D3D12 staging color");return false;
     }
@@ -165,16 +165,16 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
         }
     }
 
-    std::vector<ID3D11Resource*> acquired;acquired.reserve(3);acquired.push_back(ownedColor11_.Get());
-    if(depthWrap.wrapped)acquired.push_back(depthWrap.wrapped.Get());
-    if(motionWrap.wrapped&&motionWrap.wrapped.Get()!=depthWrap.wrapped.Get())acquired.push_back(motionWrap.wrapped.Get());
+    std::array<ID3D11Resource*,3> acquired{};UINT acquiredCount=0;acquired[acquiredCount++]=ownedColor11_.Get();
+    if(depthWrap.wrapped)acquired[acquiredCount++]=depthWrap.wrapped.Get();
+    if(motionWrap.wrapped&&motionWrap.wrapped.Get()!=depthWrap.wrapped.Get())acquired[acquiredCount++]=motionWrap.wrapped.Get();
     bridge::setCrashStage(bridge::CrashStage::On12Acquire);
-    on12_->AcquireWrappedResources(acquired.data(),(UINT)acquired.size());
+    on12_->AcquireWrappedResources(acquired.data(),acquiredCount);
     bridge::setCrashStage(bridge::CrashStage::NeuralProcess);
     const bool ok=pipeline_.process(ownedColor11_.Get(),s,runtime,st,(externalGuide.depth||externalGuide.motion)?&externalGuide:nullptr,colorContext);
     if(diagnosticMotionCandidate.score>st.nativeMotionCandidateScore){st.nativeMotionCandidateId=diagnosticMotionCandidate.stableId;st.nativeMotionCandidateScore=diagnosticMotionCandidate.score;}
     bridge::setCrashStage(bridge::CrashStage::On12Release);
-    on12_->ReleaseWrappedResources(acquired.data(),(UINT)acquired.size());
+    on12_->ReleaseWrappedResources(acquired.data(),acquiredCount);
     ctx_->Flush();
     bridge::setCrashStage(bridge::CrashStage::PostCopy);
     if(!submitBackbufferCopy(bb.Get(),false,st))return false;

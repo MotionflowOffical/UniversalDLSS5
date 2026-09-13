@@ -13,7 +13,6 @@
 #include <wrl/client.h>
 #include <MinHook.h>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -50,20 +49,29 @@ std::wstring moduleDir(){wchar_t p[32768];DWORD n=GetModuleFileNameW(self,p,_cou
 std::wstring runtimePath(){if(!ctl||!ctl->raw())return{};return ctl->raw()->runtimePath;}
 SwapCtx& getCtx(IDXGISwapChain*s){std::scoped_lock l(mx);auto&v=swaps[s];if(!v)v=std::make_unique<SwapCtx>();return*v;}
 std::uintptr_t queueIdentity(ID3D12CommandQueue* q){if(!q)return 0;ComPtr<IUnknown> id;if(FAILED(q->QueryInterface(IID_PPV_ARGS(&id))))return reinterpret_cast<std::uintptr_t>(q);return reinterpret_cast<std::uintptr_t>(id.Get());}
+void refreshQueueTouchCapture(){
+ bool required=false;const auto now=GetTickCount64();
+ {std::scoped_lock lock(mx);for(const auto&[_,ptr]:swaps){if(!ptr||ptr->api!=GraphicsApi::D3D12||!ptr->backbuffersRegistered)continue;if(!presentQueueTrusted(ptr->queueProof,now)){required=true;break;}}}
+ gpu::setD3D12QueueTouchCaptureEnabled(required);
+}
 void noteQueueEvidence(IDXGISwapChain* s,ID3D12CommandQueue* q,bool exactCreation){
  if(!s||!q||q->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT)return;const auto now=GetTickCount64();const auto id=queueIdentity(q);bool newlyTrusted=false;
  {std::scoped_lock lock(mx);auto& ptr=swaps[s];if(!ptr)ptr=std::make_unique<SwapCtx>();auto& c=*ptr;const auto wasTrusted=presentQueueTrusted(c.queueProof,now);observePresentQueueEvidence(c.queueProof,id,now,exactCreation);const auto trusted=presentQueueTrusted(c.queueProof,now);if(trusted&&c.queueProof.trustedQueueId==id){c.q12=q;c.queueCandidate=q;c.safeAttach.queueCaptured=true;newlyTrusted=!wasTrusted||!c.queueProofLogged;c.queueProofLogged=true;}else if(!trusted){c.safeAttach.queueCaptured=false;if(!c.queueProof.creationProven)c.q12.Reset();}}
  if(newlyTrusted)logAttachStage(AttachLogStage::D3D12QueueCaptured,exactCreation?L"queue supplied by DXGI swapchain creation":L"queue proven by swapchain backbuffer command-list transitions");
+ refreshQueueTouchCapture();
 }
 void unregisterSwapchainBackbuffersLocked(IDXGISwapChain* s){for(auto it=backbufferOwners.begin();it!=backbufferOwners.end();){if(it->second==s)it=backbufferOwners.erase(it);else ++it;}}
 void registerSwapchainBackbuffers(IDXGISwapChain* s){
  if(!s)return;DXGI_SWAP_CHAIN_DESC sd{};if(FAILED(s->GetDesc(&sd))||!sd.BufferCount)return;std::vector<ID3D12Resource*> buffers;buffers.reserve(sd.BufferCount);std::vector<ComPtr<ID3D12Resource>> holds;holds.reserve(sd.BufferCount);
  for(UINT i=0;i<sd.BufferCount;++i){ComPtr<ID3D12Resource> r;if(SUCCEEDED(s->GetBuffer(i,IID_PPV_ARGS(&r)))&&r){buffers.push_back(r.Get());holds.push_back(r);}}
- std::scoped_lock lock(mx);unregisterSwapchainBackbuffersLocked(s);for(auto* r:buffers)backbufferOwners[r]=s;auto it=swaps.find(s);if(it!=swaps.end()&&it->second)it->second->backbuffersRegistered=!buffers.empty();
+ {std::scoped_lock lock(mx);unregisterSwapchainBackbuffersLocked(s);for(auto* r:buffers)backbufferOwners[r]=s;auto it=swaps.find(s);if(it!=swaps.end()&&it->second)it->second->backbuffersRegistered=!buffers.empty();}
+ refreshQueueTouchCapture();
 }
 void STDMETHODCALLTYPE hookExecute(ID3D12CommandQueue*q,UINT n,ID3D12CommandList*const*l){
- std::vector<IDXGISwapChain*> owners;
- if(q&&q->GetDesc().Type==D3D12_COMMAND_LIST_TYPE_DIRECT&&l){std::unordered_set<IDXGISwapChain*> unique;for(UINT i=0;i<n;++i){for(auto* r:gpu::takeD3D12CommandListTouches(l[i])){std::scoped_lock lock(mx);auto it=backbufferOwners.find(r);if(it!=backbufferOwners.end()&&it->second)unique.insert(it->second);}}owners.assign(unique.begin(),unique.end());}
+ thread_local std::vector<IDXGISwapChain*> owners;owners.clear();
+ if(q&&q->GetDesc().Type==D3D12_COMMAND_LIST_TYPE_DIRECT&&l&&gpu::d3d12QueueTouchCaptureEnabled()){
+  for(UINT i=0;i<n;++i){const auto touched=gpu::takeD3D12CommandListTouches(l[i]);if(touched.empty())continue;std::scoped_lock lock(mx);for(auto* r:touched){auto it=backbufferOwners.find(r);if(it==backbufferOwners.end()||!it->second)continue;if(std::find(owners.begin(),owners.end(),it->second)==owners.end())owners.push_back(it->second);}}
+ }
  origExecute(q,n,l);for(auto* owner:owners)noteQueueEvidence(owner,q,false);
 }
 void rememberQueue(IDXGISwapChain*s,IUnknown*d){if(!s||!d)return;ComPtr<ID3D12CommandQueue>q;if(SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&q))))noteQueueEvidence(s,q.Get(),true);}
@@ -148,7 +156,7 @@ bool process(IDXGISwapChain*s){
 }
 HRESULT STDMETHODCALLTYPE hookPresent(IDXGISwapChain*s,UINT sync,UINT flags){process(s);setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent(s,sync,flags);setCrashStage(CrashStage::PresentReturned);recordPresentResult(s,hr);setCrashStage(CrashStage::Idle);return hr;} 
 HRESULT STDMETHODCALLTYPE hookPresent1(IDXGISwapChain1*s,UINT sync,UINT flags,const DXGI_PRESENT_PARAMETERS*p){process(s);setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent1(s,sync,flags,p);setCrashStage(CrashStage::PresentReturned);recordPresentResult(s,hr);setCrashStage(CrashStage::Idle);return hr;} 
-HRESULT STDMETHODCALLTYPE hookResize(IDXGISwapChain*s,UINT count,UINT w,UINT h,DXGI_FORMAT f,UINT flags){{std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()){if(it->second->p11)it->second->p11->reset();if(it->second->p12)it->second->p12->reset();it->second->backbuffersRegistered=false;it->second->colorDirty=true;}unregisterSwapchainBackbuffersLocked(s);if(primary==s)primary=nullptr;}return origResize(s,count,w,h,f,flags);} 
+HRESULT STDMETHODCALLTYPE hookResize(IDXGISwapChain*s,UINT count,UINT w,UINT h,DXGI_FORMAT f,UINT flags){{std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()){if(it->second->p11)it->second->p11->reset();if(it->second->p12)it->second->p12->reset();it->second->backbuffersRegistered=false;it->second->colorDirty=true;}unregisterSwapchainBackbuffersLocked(s);if(primary==s)primary=nullptr;}refreshQueueTouchCapture();return origResize(s,count,w,h,f,flags);} 
 HRESULT STDMETHODCALLTYPE hookSetFullscreen(IDXGISwapChain*s,BOOL full,IDXGIOutput*o){auto hr=origSetFullscreen(s,full,o);if(SUCCEEDED(hr))markColorDirty(s);return hr;}
 HRESULT STDMETHODCALLTYPE hookSetColorSpace(IDXGISwapChain3*s,DXGI_COLOR_SPACE_TYPE color){
  auto hr=origSetColorSpace(s,color);
@@ -159,7 +167,7 @@ HRESULT STDMETHODCALLTYPE hookSetColorSpace(IDXGISwapChain3*s,DXGI_COLOR_SPACE_T
  return hr;
 }
 HRESULT STDMETHODCALLTYPE hookSetHdrMeta(IDXGISwapChain4*s,DXGI_HDR_METADATA_TYPE type,UINT size,void* data){auto hr=origSetHdrMeta(s,type,size,data);if(SUCCEEDED(hr)){std::scoped_lock l(mx);auto&v=swaps[s];if(!v)v=std::make_unique<SwapCtx>();v->colorDirty=true;v->hdrMetadataPresent=type!=DXGI_HDR_METADATA_TYPE_NONE;if(type==DXGI_HDR_METADATA_TYPE_HDR10&&data&&size>=sizeof(DXGI_HDR_METADATA_HDR10)){auto*m=(DXGI_HDR_METADATA_HDR10*)data;float master=m->MaxMasteringLuminance*0.0001f;float cll=(float)m->MaxContentLightLevel;float peak=std::max(master,cll);if(peak>=80.0f&&peak<=10000.0f)v->hdrMaxNits=peak;}}return hr;}
-HRESULT STDMETHODCALLTYPE hookResize1(IDXGISwapChain3*s,UINT count,UINT w,UINT h,DXGI_FORMAT f,UINT flags,const UINT*masks,IUnknown*const*queues){{std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()){if(it->second->p11)it->second->p11->reset();if(it->second->p12)it->second->p12->reset();it->second->backbuffersRegistered=false;it->second->colorDirty=true;}unregisterSwapchainBackbuffersLocked(s);if(primary==s)primary=nullptr;}return origResize1(s,count,w,h,f,flags,masks,queues);}
+HRESULT STDMETHODCALLTYPE hookResize1(IDXGISwapChain3*s,UINT count,UINT w,UINT h,DXGI_FORMAT f,UINT flags,const UINT*masks,IUnknown*const*queues){{std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()){if(it->second->p11)it->second->p11->reset();if(it->second->p12)it->second->p12->reset();it->second->backbuffersRegistered=false;it->second->colorDirty=true;}unregisterSwapchainBackbuffersLocked(s);if(primary==s)primary=nullptr;}refreshQueueTouchCapture();return origResize1(s,count,w,h,f,flags,masks,queues);}
 HRESULT STDMETHODCALLTYPE hookCreateSwap(IDXGIFactory*f,IUnknown*d,DXGI_SWAP_CHAIN_DESC*desc,IDXGISwapChain**out){auto hr=origCreateSwap(f,d,desc,out);if(SUCCEEDED(hr)&&out&&*out)rememberQueue(*out,d);return hr;}
 HRESULT STDMETHODCALLTYPE hookCreateHwnd(IDXGIFactory2*f,IUnknown*d,HWND h,const DXGI_SWAP_CHAIN_DESC1*a,const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*b,IDXGIOutput*o,IDXGISwapChain1**out){auto hr=origCreateHwnd(f,d,h,a,b,o,out);if(SUCCEEDED(hr)&&out&&*out)rememberQueue(*out,d);return hr;}
 HRESULT STDMETHODCALLTYPE hookCreateCore(IDXGIFactory2*f,IUnknown*d,IUnknown*w,const DXGI_SWAP_CHAIN_DESC1*a,IDXGIOutput*o,IDXGISwapChain1**out){auto hr=origCreateCore(f,d,w,a,o,out);if(SUCCEEDED(hr)&&out&&*out)rememberQueue(*out,d);return hr;}

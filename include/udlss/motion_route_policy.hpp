@@ -1,9 +1,14 @@
 #pragma once
 #include <cstdint>
 #include <string_view>
+#include "settings.hpp"
 namespace udlss {
 enum class MotionRoute : std::uint32_t { AdapterNative=0, TrackedNative=1, CameraDepth=2, Nvof=3, Hlsl=4, Zero=5 };
 struct MotionRouteAvailability { bool adapterNative{}; bool trackedNative{}; bool cameraDepth{}; bool nvof{}; bool hlsl{true}; };
+inline constexpr bool shouldMaintainHlslFlowHistory(MotionSource source){
+    return source==MotionSource::SynthesizedOpticalFlow;
+}
+
 inline constexpr MotionRoute chooseMotionRoute(const MotionRouteAvailability& a){
     if(a.adapterNative) return MotionRoute::AdapterNative;
     if(a.trackedNative) return MotionRoute::TrackedNative;

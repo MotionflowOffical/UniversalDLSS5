@@ -50,5 +50,6 @@ private:
     UINT depthCopyWidth_{},depthCopyHeight_{};
     void* adapter_{};
     GameGuidesGetFrameV1 getFrame_{};
+    bool adapterProbeAttempted_{};
 };
 }

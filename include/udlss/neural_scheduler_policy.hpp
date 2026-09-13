@@ -11,6 +11,22 @@ struct PresentationDecision {
     bool waitForCurrent{};
 };
 
+inline constexpr bool shouldCacheCurrentNeuralOutput(FramePacingMode mode) {
+    return mode!=FramePacingMode::Synchronized;
+}
+
+inline constexpr bool needsAsyncNeuralCache(FramePacingMode mode) {
+    return shouldCacheCurrentNeuralOutput(mode);
+}
+
+inline constexpr bool needsNeuralRefinementScratch(std::uint32_t requestedPasses) {
+    return requestedPasses>1;
+}
+
+inline constexpr bool needsNeuralControlMask(bool enabled,bool supplied) {
+    return enabled&&supplied;
+}
+
 inline PresentationDecision choosePresentation(FramePacingMode mode,bool cacheValid,std::uint32_t outputAgeFrames) {
     switch(mode) {
     case FramePacingMode::Synchronized:

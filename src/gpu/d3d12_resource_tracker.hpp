@@ -43,6 +43,8 @@ D3D12ResourceTracker& globalD3D12ResourceTracker();
 bool installD3D12ResourceTrackingHooks(ID3D12Device* sampleDevice);
 void setD3D12TrackingSuppressed(bool value);
 bool d3d12TrackingSuppressed();
+void setD3D12QueueTouchCaptureEnabled(bool value);
+bool d3d12QueueTouchCaptureEnabled();
 std::vector<ID3D12Resource*> takeD3D12CommandListTouches(ID3D12CommandList* commandList);
 
 } // namespace udlss::gpu

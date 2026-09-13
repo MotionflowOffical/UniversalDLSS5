@@ -2,6 +2,7 @@
 #include "udlss/guide_candidate_policy.hpp"
 #include <MinHook.h>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,7 @@ struct TrackerState {
     std::uint64_t nextId{1};
 } g;
 thread_local bool g_suppressed=false;
+std::atomic_bool queueTouchCaptureEnabled{true};
 
 using ResourceBarrierFn=void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,UINT,const D3D12_RESOURCE_BARRIER*);
 ResourceBarrierFn origResourceBarrier{};
@@ -87,12 +89,14 @@ void STDMETHODCALLTYPE hkResourceBarrier(ID3D12GraphicsCommandList* list,UINT co
 D3D12ResourceTracker& globalD3D12ResourceTracker(){static D3D12ResourceTracker t;return t;}
 void setD3D12TrackingSuppressed(bool v){g_suppressed=v;}
 bool d3d12TrackingSuppressed(){return g_suppressed;}
+void setD3D12QueueTouchCaptureEnabled(bool value){const bool previous=queueTouchCaptureEnabled.exchange(value,std::memory_order_relaxed);if(previous!=value){std::scoped_lock lock(g.mutex);g.commandListTouches.clear();}}
+bool d3d12QueueTouchCaptureEnabled(){return queueTouchCaptureEnabled.load(std::memory_order_relaxed);}
 
 void D3D12ResourceTracker::onResourceBarriers(ID3D12GraphicsCommandList* list,UINT count,const D3D12_RESOURCE_BARRIER* barriers){
-    if(!barriers)return;std::scoped_lock lock(g.mutex);
+    if(!barriers)return;const bool captureQueueTouches=list&&queueTouchCaptureEnabled.load(std::memory_order_relaxed);std::scoped_lock lock(g.mutex);
     for(UINT i=0;i<count;i++){
         const auto& b=barriers[i];if(b.Type!=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION||!b.Transition.pResource)continue;
-        if(list){auto& touched=g.commandListTouches[list];if(std::find(touched.begin(),touched.end(),b.Transition.pResource)==touched.end())touched.push_back(b.Transition.pResource);}
+        if(captureQueueTouches){auto& touched=g.commandListTouches[list];if(std::find(touched.begin(),touched.end(),b.Transition.pResource)==touched.end())touched.push_back(b.Transition.pResource);}
         auto* e=getOrCreate(b.Transition.pResource);if(!e)continue;
         e->lastSeenFrame=g.frame;e->state=b.Transition.StateAfter;
         const bool wasWrite=writeState(b.Transition.StateBefore),nowWrite=writeState(b.Transition.StateAfter),nowRead=readState(b.Transition.StateAfter);

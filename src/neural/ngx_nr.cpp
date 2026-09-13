@@ -236,9 +236,11 @@ struct FrameSlot {
     std::uint64_t submissionSeq{};
     std::uint64_t sourcePresentSeq{};
     std::uint64_t sourceTickMs{};
+    std::uint32_t timingIndex{};
+    bool timingRecorded{};
     SharedTexture input,output,scratch,motion,depth,controlMask;
     bool finalInScratch{};
-    void resetTextures(){input.reset();output.reset();scratch.reset();motion.reset();depth.reset();controlMask.reset();finalInScratch=false;}
+    void resetTextures(){input.reset();output.reset();scratch.reset();motion.reset();depth.reset();controlMask.reset();finalInScratch=false;timingRecorded=false;}
 };
 }
 
@@ -279,7 +281,11 @@ public:
             return false;
         }
 
-        if(!createSharedFence(status) || !createCommandSlots(status)) return false;
+        if(!createSharedFence(status)) return false;
+        completionEvent_=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        if(!completionEvent_){setFailure(status,PipelineStage::NeuralD3D12InitFailed,static_cast<int>(GetLastError()),L"Could not create neural completion fence event");return false;}
+        createTimingResources();
+        if(!createCommandSlots(status)) return false;
         markPipelineStage(status.stageMask,PipelineStage::NeuralD3D12Ready);
 
         const wchar_t* searchPaths[]={runtime_.c_str()};
@@ -418,13 +424,16 @@ public:
         status.neuralOutputAgeFrames=0;
         status.neuralOutputAgeMs=0.0f;
         status.pacingWaitMs=0.0f;
+        status.lastGpuMs=lastNeuralGpuMs_;
         if(!initialized_ || !params_ || !frame.input || !frame.output || !frame.motion || !frame.depth) return false;
-        if(!ensureSharedResources(frame,status)) return false;
+        const bool cacheCurrentOutput=needsAsyncNeuralCache(settings.framePacing);
+        if(!ensureSharedResources(frame,cacheCurrentOutput,status)) return false;
 
         const std::uint64_t currentPresentSeq=++presentSeq_;
         const std::uint64_t nowTick=GetTickCount64();
         auto completed=completionFence12_->GetCompletedValue();
-        const bool advancedOutput=consumeLatestCompletedOutput(completed);
+        if(!cacheCurrentOutput){cacheValid_=false;cachePresentSeq_=0;cacheTickMs_=0;}
+        const bool advancedOutput=cacheCurrentOutput&&consumeLatestCompletedOutput(completed);
         const auto cacheAgeFrames=[&]()->std::uint32_t {
             if(!cacheValid_ || !cachePresentSeq_ || currentPresentSeq<cachePresentSeq_) return 0;
             const auto age=currentPresentSeq-cachePresentSeq_;
@@ -499,7 +508,9 @@ public:
         }
 
         FrameSlot& slot=slots_[(std::size_t)decision.submitSlot];
-        if(!ensureSlotResources(slot,frame,status)) return false;
+        const bool useRefinementScratch=needsNeuralRefinementScratch(status.neuralPassesRequested);
+        const bool useControlMask=needsNeuralControlMask(settings.useControlMask,frame.controlMask!=nullptr);
+        if(!ensureSlotResources(slot,frame,useRefinementScratch,useControlMask,status)) return false;
         if(FAILED(slot.allocator->Reset()) || FAILED(slot.list->Reset(slot.allocator.Get(),nullptr))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural command allocator/list reset failed");
             return false;
@@ -509,7 +520,7 @@ public:
         ctx11_->CopyResource(slot.input.d11.Get(),frame.input);
         ctx11_->CopyResource(slot.motion.d11.Get(),frame.motion);
         ctx11_->CopyResource(slot.depth.d11.Get(),frame.depth);
-        if(frame.controlMask && slot.controlMask.d11) ctx11_->CopyResource(slot.controlMask.d11.Get(),frame.controlMask);
+        if(useControlMask && slot.controlMask.d11) ctx11_->CopyResource(slot.controlMask.d11.Get(),frame.controlMask);
         const std::uint64_t readyValue=++producerFenceValue_;
         if(FAILED(ctx11v4_->Signal(producerFence11_.Get(),readyValue))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D11 shared-fence signal failed");
@@ -521,7 +532,7 @@ public:
             return false;
         }
 
-        transitionInitial(slot,slot.list.Get());
+        transitionInitial(slot,slot.list.Get(),useControlMask);
         const bool creatingFeature=feature_==nullptr;
         if(!ensureFeature(slot.list.Get(),frame,settings,status)) { slot.list->Close(); return false; }
         if(creatingFeature) {
@@ -550,7 +561,7 @@ public:
             NVSDK_NGX_Parameter_SetD3d12Resource(params_,kOutput,output);
             NVSDK_NGX_Parameter_SetD3d12Resource(params_,kMVec,slot.motion.d12.Get());
             NVSDK_NGX_Parameter_SetD3d12Resource(params_,kDepth,slot.depth.d12.Get());
-            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kControlMask,(settings.useControlMask&&frame.controlMask)?slot.controlMask.d12.Get():nullptr);
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kControlMask,useControlMask?slot.controlMask.d12.Get():nullptr);
             NVSDK_NGX_Parameter_SetF(params_,kMVecScaleX,frame.motionScaleX);
             NVSDK_NGX_Parameter_SetF(params_,kMVecScaleY,frame.motionScaleY);
             NVSDK_NGX_Parameter_SetUI(params_,kDepthInverted,frame.depthInverted?1u:0u);
@@ -572,6 +583,9 @@ public:
             return result;
         };
 
+        slot.timingRecorded=false;
+        const UINT timingBase=slot.timingIndex*2u;
+        if(timingQueryHeap_&&timingReadback_&&timestampFrequency_){slot.list->EndQuery(timingQueryHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,timingBase);}
         auto result=bindAndEvaluate(feature_,slot.input.d12.Get(),slot.output.d12.Get(),reset_||frame.resetHistory);
         if(NVSDK_NGX_FAILED(result)) {
             rememberNgxFailure(createFailure_,NgxFailureStage::EvaluateFeature,static_cast<int>(result),0);
@@ -602,7 +616,12 @@ public:
             ++executedPasses;
         }
         slot.finalInScratch=finalScratch;
-        transitionFinish(slot,slot.list.Get(),finalScratch,executedPasses>1);
+        if(timingQueryHeap_&&timingReadback_&&timestampFrequency_){
+            slot.list->EndQuery(timingQueryHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,timingBase+1u);
+            slot.list->ResolveQueryData(timingQueryHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,timingBase,2,timingReadback_.Get(),static_cast<UINT64>(timingBase)*sizeof(std::uint64_t));
+            slot.timingRecorded=true;
+        }
+        transitionFinish(slot,slot.list.Get(),finalScratch,executedPasses>1,useControlMask);
 
         if(FAILED(slot.list->Close())) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural command list close failed");
@@ -624,13 +643,16 @@ public:
             const auto waitStart=std::chrono::steady_clock::now();
             if(!waitForSlotCompletion(slot,status)) return false;
             status.pacingWaitMs=static_cast<float>(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-waitStart).count());
+            updateNeuralGpuTime(slot);status.lastGpuMs=lastNeuralGpuMs_;
             ID3D11Texture2D* final11=slot.finalInScratch?slot.scratch.d11.Get():slot.output.d11.Get();
             if(!final11) return false;
             ctx11_->CopyResource(frame.output,final11);
-            if(cache_) ctx11_->CopyResource(cache_.Get(),final11);
-            cacheValid_=cache_.Get()!=nullptr;
-            cachePresentSeq_=slot.sourcePresentSeq;
-            cacheTickMs_=slot.sourceTickMs;
+            if(cacheCurrentOutput&&cache_){
+                ctx11_->CopyResource(cache_.Get(),final11);
+                cacheValid_=true;cachePresentSeq_=slot.sourcePresentSeq;cacheTickMs_=slot.sourceTickMs;
+            }else{
+                cacheValid_=false;cachePresentSeq_=0;cacheTickMs_=0;
+            }
             consumedSubmissionSeq_=slot.submissionSeq;
             status.neuralOutputAgeFrames=0;
             status.neuralOutputAgeMs=0.0f;
@@ -648,6 +670,7 @@ public:
         status.queueCapacity=activeSlotCount_;
         status.queueLimit=std::clamp<std::uint32_t>(settings.maxFramesInFlight,(std::uint32_t)kInitialFrameSlots,(std::uint32_t)kFrameSlots);
         status.queueDepth=0;
+        status.lastGpuMs=lastNeuralGpuMs_;
         const auto afterCompleted=completionFence12_->GetCompletedValue();
         for(std::uint32_t i=0;i<activeSlotCount_;++i)
             if(slots_[i].completionValue && slots_[i].completionValue>afterCompleted) ++status.queueDepth;
@@ -680,14 +703,9 @@ private:
         }
         slot.completionValue=value;
         if(completionFence12_->GetCompletedValue()<value) {
-            HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-            if(!event) {
-                setFailure(status,PipelineStage::FeatureCreateFailed,static_cast<int>(GetLastError()),L"Could not create feature-initialization fence event");
-                return false;
-            }
-            const HRESULT hr=completionFence12_->SetEventOnCompletion(value,event);
-            const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(event,5000):WAIT_FAILED;
-            CloseHandle(event);
+            if(!completionEvent_){setFailure(status,PipelineStage::FeatureCreateFailed,0,L"Neural completion event is unavailable");return false;}
+            const HRESULT hr=completionFence12_->SetEventOnCompletion(value,completionEvent_);
+            const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(completionEvent_,5000):WAIT_FAILED;
             if(FAILED(hr) || wait!=WAIT_OBJECT_0) {
                 setFailure(status,PipelineStage::FeatureCreateFailed,FAILED(hr)?static_cast<int>(hr):static_cast<int>(wait),L"Timed out waiting for Feature-18 initialization commands");
                 return false;
@@ -751,8 +769,33 @@ private:
         return true;
     }
 
+    void createTimingResources() {
+        timingQueryHeap_.Reset();timingReadback_.Reset();timestampFrequency_=0;lastNeuralGpuMs_=0.0f;
+        if(!d12_||!queue12_||FAILED(queue12_->GetTimestampFrequency(&timestampFrequency_))||!timestampFrequency_)return;
+        D3D12_QUERY_HEAP_DESC q{};q.Count=static_cast<UINT>(kFrameSlots*2);q.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        if(FAILED(d12_->CreateQueryHeap(&q,IID_PPV_ARGS(&timingQueryHeap_)))){timestampFrequency_=0;return;}
+        D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_READBACK; // UDLSS_TIMESTAMP_QUERY_READBACK: timestamp metadata only, never frame/image data
+        heap.CreationNodeMask=1;heap.VisibleNodeMask=1;
+        D3D12_RESOURCE_DESC d{};d.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;d.Width=kFrameSlots*2*sizeof(std::uint64_t);d.Height=1;d.DepthOrArraySize=1;d.MipLevels=1;d.SampleDesc.Count=1;d.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if(FAILED(d12_->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&timingReadback_)))){timingQueryHeap_.Reset();timestampFrequency_=0;}
+    }
+
+    bool updateNeuralGpuTime(FrameSlot& slot) {
+        if(!slot.timingRecorded||!timingReadback_||!timestampFrequency_)return false;
+        const SIZE_T offset=static_cast<SIZE_T>(slot.timingIndex)*2u*sizeof(std::uint64_t);
+        D3D12_RANGE readRange{offset,offset+2u*sizeof(std::uint64_t)};void* mapped=nullptr;
+        if(FAILED(timingReadback_->Map(0,&readRange,&mapped))||!mapped)return false;
+        const auto* values=reinterpret_cast<const std::uint64_t*>(static_cast<const std::uint8_t*>(mapped)+offset);
+        const auto begin=values[0],end=values[1];D3D12_RANGE written{0,0};timingReadback_->Unmap(0,&written);
+        slot.timingRecorded=false;
+        if(end<begin)return false;
+        lastNeuralGpuMs_=static_cast<float>((static_cast<double>(end-begin)*1000.0)/static_cast<double>(timestampFrequency_));
+        return true;
+    }
+
     bool createCommandSlots(RuntimeStatus& status) {
-        for(auto& slot:slots_) {
+        for(std::size_t i=0;i<slots_.size();++i) {
+            auto& slot=slots_[i];slot.timingIndex=static_cast<std::uint32_t>(i);
             if(FAILED(d12_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&slot.allocator))) ||
                FAILED(d12_->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,slot.allocator.Get(),nullptr,IID_PPV_ARGS(&slot.list))) ||
                FAILED(slot.list->Close())) {
@@ -814,32 +857,44 @@ private:
         width_=height_=0;createAttempted_=false;refinementUnavailable_=false;refinementFailureResult_=0;clearNgxFailure(createFailure_);
     }
 
-    bool ensureSharedResources(const FrameResources& frame,RuntimeStatus& status) {
-        if(width_==frame.width && height_==frame.height && cache_) {
+    bool ensureSharedResources(const FrameResources& frame,bool needCache,RuntimeStatus& status) {
+        const bool sameExtent=width_==frame.width && height_==frame.height;
+        if(sameExtent) {
+            if(needCache && !cache_ && !createCacheTexture(frame.width,frame.height,frame.inputFormat,status)) return false;
+            if(!needCache && cache_) { cache_.Reset(); cacheValid_=false; }
             markPipelineStage(status.stageMask,PipelineStage::GuideResourcesReady);
             return true;
         }
         releaseFeatureAndShared();
         width_=frame.width;height_=frame.height;
-        if(!createCacheTexture(frame.width,frame.height,frame.inputFormat,status)) return false;
+        if(needCache && !createCacheTexture(frame.width,frame.height,frame.inputFormat,status)) return false;
         markPipelineStage(status.stageMask,PipelineStage::GuideResourcesReady);
         return true;
     }
 
-    bool ensureSlotResources(FrameSlot& slot,const FrameResources& frame,RuntimeStatus& status) {
-        if(slot.input.d12 && slot.input.width==frame.width && slot.input.height==frame.height &&
-           slot.input.format==frame.inputFormat && slot.motion.format==frame.motionFormat && slot.depth.format==frame.depthFormat) return true;
+    bool ensureSlotResources(FrameSlot& slot,const FrameResources& frame,bool needScratch,bool useControlMask,RuntimeStatus& status) {
+        const bool baseReady=slot.input.d12 && slot.output.d12 && slot.motion.d12 && slot.depth.d12 &&
+            slot.input.width==frame.width && slot.input.height==frame.height &&
+            slot.input.format==frame.inputFormat && slot.motion.format==frame.motionFormat && slot.depth.format==frame.depthFormat;
+        const bool optionalReady=(!needScratch || (slot.scratch.d12 && slot.scratch.format==frame.inputFormat)) &&
+            (!useControlMask || (slot.controlMask.d12 && slot.controlMask.format==frame.controlMaskFormat));
+        if(baseReady && optionalReady) {
+            if(!needScratch) slot.scratch.reset();
+            if(!useControlMask) slot.controlMask.reset();
+            return true;
+        }
         if(slot.completionValue && completionFence12_ && completionFence12_->GetCompletedValue()<slot.completionValue) {
             setFailure(status,PipelineStage::GuideResourcesFailed,0,L"Attempted to recycle an in-flight neural resource slot");
             return false;
         }
         slot.resetTextures();
-        return createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.input,status) &&
-               createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.output,status) &&
-               createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.scratch,status) &&
-               createSharedTexture(frame.width,frame.height,frame.motionFormat,slot.motion,status) &&
-               createSharedTexture(frame.width,frame.height,frame.depthFormat,slot.depth,status) &&
-               createSharedTexture(frame.width,frame.height,frame.controlMaskFormat,slot.controlMask,status);
+        if(!createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.input,status) ||
+           !createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.output,status) ||
+           !createSharedTexture(frame.width,frame.height,frame.motionFormat,slot.motion,status) ||
+           !createSharedTexture(frame.width,frame.height,frame.depthFormat,slot.depth,status)) return false;
+        if(needScratch && !createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.scratch,status)) return false;
+        if(useControlMask && !createSharedTexture(frame.width,frame.height,frame.controlMaskFormat,slot.controlMask,status)) return false;
+        return true;
     }
 
     void fillCreateParameters(UINT width,UINT height,std::uint32_t renderPreset) {
@@ -944,16 +999,16 @@ private:
         return b;
     }
 
-    void transitionInitial(FrameSlot& slot,ID3D12GraphicsCommandList* list) {
+    void transitionInitial(FrameSlot& slot,ID3D12GraphicsCommandList* list,bool useControlMask) {
         const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        std::array<D3D12_RESOURCE_BARRIER,5> b{
-            transition(slot.input.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
-            transition(slot.motion.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
-            transition(slot.depth.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
-            transition(slot.controlMask.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
-            transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-        };
-        list->ResourceBarrier((UINT)b.size(),b.data());
+        std::array<D3D12_RESOURCE_BARRIER,5> b{};
+        UINT n=0;
+        b[n++]=transition(slot.input.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
+        b[n++]=transition(slot.motion.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
+        b[n++]=transition(slot.depth.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
+        if(useControlMask) b[n++]=transition(slot.controlMask.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
+        b[n++]=transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        list->ResourceBarrier(n,b.data());
     }
 
     void transitionRefinement(ID3D12GraphicsCommandList* list,ID3D12Resource* src,ID3D12Resource* dst,bool dstWasRead) {
@@ -978,14 +1033,12 @@ private:
 
     bool waitForCompletionValue(std::uint64_t value,DWORD timeoutMs,RuntimeStatus& status,const wchar_t* reason) {
         if(!value || completionFence12_->GetCompletedValue()>=value) return true;
-        HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-        if(!event) {
-            setFailure(status,PipelineStage::FeatureEvaluateFailed,static_cast<int>(GetLastError()),L"Could not create neural pacing fence event");
+        if(!completionEvent_) {
+            setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"Neural pacing fence event is unavailable");
             return false;
         }
-        const HRESULT hr=completionFence12_->SetEventOnCompletion(value,event);
-        const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(event,timeoutMs):WAIT_FAILED;
-        CloseHandle(event);
+        const HRESULT hr=completionFence12_->SetEventOnCompletion(value,completionEvent_);
+        const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(completionEvent_,timeoutMs):WAIT_FAILED;
         if(FAILED(hr) || wait!=WAIT_OBJECT_0) {
             std::wstring message=L"Timed out waiting for "; message+=reason;
             setFailure(status,PipelineStage::FeatureEvaluateFailed,FAILED(hr)?static_cast<int>(hr):static_cast<int>(wait),message);
@@ -1005,6 +1058,7 @@ private:
             if(!latest || slot.submissionSeq>latest->submissionSeq) latest=&slot;
         }
         if(!latest || !cache_) return false;
+        updateNeuralGpuTime(*latest);
         ID3D11Texture2D* final11=latest->finalInScratch?latest->scratch.d11.Get():latest->output.d11.Get();
         if(!final11) return false;
         // completionFence12_ proves D3D12 has returned this resource to COMMON.
@@ -1018,14 +1072,14 @@ private:
         return true;
     }
 
-    void transitionFinish(FrameSlot& slot,ID3D12GraphicsCommandList* list,bool finalScratch,bool hadRefinement) {
+    void transitionFinish(FrameSlot& slot,ID3D12GraphicsCommandList* list,bool finalScratch,bool hadRefinement,bool useControlMask) {
         const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         std::array<D3D12_RESOURCE_BARRIER,6> b{};
         UINT n=0;
         b[n++]=transition(slot.input.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
         b[n++]=transition(slot.motion.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
         b[n++]=transition(slot.depth.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
-        b[n++]=transition(slot.controlMask.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+        if(useControlMask) b[n++]=transition(slot.controlMask.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
         if(!hadRefinement) {
             b[n++]=transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
         } else if(finalScratch) {
@@ -1041,11 +1095,8 @@ private:
     void waitForSubmittedWork() {
         std::uint64_t target=0;
         for(const auto& slot:slots_) target=std::max(target,slot.completionValue);
-        if(!target || !completionFence12_ || completionFence12_->GetCompletedValue()>=target) return;
-        HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-        if(!event) return;
-        if(SUCCEEDED(completionFence12_->SetEventOnCompletion(target,event))) WaitForSingleObject(event,2000);
-        CloseHandle(event);
+        if(!target || !completionFence12_ || !completionEvent_ || completionFence12_->GetCompletedValue()>=target) return;
+        if(SUCCEEDED(completionFence12_->SetEventOnCompletion(target,completionEvent_))) WaitForSingleObject(completionEvent_,2000);
     }
 
     void shutdown() {
@@ -1064,7 +1115,8 @@ private:
         if(ngxInitialized_ && d12_) NVSDK_NGX_D3D12_Shutdown1(d12_.Get());
         ngxInitialized_=false;
         for(auto& slot:slots_) { slot.resetTextures(); slot.list.Reset(); slot.allocator.Reset(); slot.completionValue=0; slot.submissionSeq=0; slot.sourcePresentSeq=0; slot.sourceTickMs=0; }
-        cache_.Reset();cacheValid_=false;
+        cache_.Reset();cacheValid_=false;timingReadback_.Reset();timingQueryHeap_.Reset();timestampFrequency_=0;lastNeuralGpuMs_=0.0f;
+        if(completionEvent_){CloseHandle(completionEvent_);completionEvent_=nullptr;}
         producerFence11_.Reset(); producerFence12_.Reset(); completionFence12_.Reset(); ctx11v4_.Reset(); d11v5_.Reset();
         queue12_.Reset(); d12_.Reset(); ctx11_.Reset(); d11_.Reset();
         initialized_=false; ownsD3D12_=false; reset_=true; createAttempted_=false;
@@ -1080,6 +1132,11 @@ private:
     ComPtr<ID3D12Fence> producerFence12_;
     ComPtr<ID3D11Fence> producerFence11_;
     ComPtr<ID3D12Fence> completionFence12_;
+    HANDLE completionEvent_{};
+    ComPtr<ID3D12QueryHeap> timingQueryHeap_;
+    ComPtr<ID3D12Resource> timingReadback_;
+    std::uint64_t timestampFrequency_{};
+    float lastNeuralGpuMs_{};
     std::array<FrameSlot,kFrameSlots> slots_{};
     ComPtr<ID3D11Texture2D> cache_;
     NVSDK_NGX_Parameter* params_{};

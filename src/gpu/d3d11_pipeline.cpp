@@ -4,10 +4,10 @@
 #include "udlss/motion_route_policy.hpp"
 #include "udlss/neural_scheduler_policy.hpp"
 #include "udlss/camera_motion_math.hpp"
+#include "udlss/d3d11_surface_policy.hpp"
 #include <d3dcompiler.h>
 #include <filesystem>
 #include <array>
-#include <chrono>
 #include <cstring>
 #include <algorithm>
 
@@ -69,7 +69,10 @@ void D3D11Pipeline::releaseViews(){
     sourceCopy_.Reset(); current_.Reset(); history_.Reset(); currentLow_.Reset(); historyLow_.Reset(); nrInput8_.Reset(); nrOutput8_.Reset(); postOut_.Reset(); flowLow_.Reset(); motionTex_.Reset(); depthTex_.Reset(); maskTex_.Reset(); nrControlMaskTex_.Reset();
     sourceSrv_.Reset(); currentSrv_.Reset(); historySrv_.Reset(); currentLowSrv_.Reset(); historyLowSrv_.Reset(); nrInput8Srv_.Reset(); nrOutput8Srv_.Reset(); postSrv_.Reset(); flowSrv_.Reset(); motionSrv_.Reset(); depthSrv_.Reset(); maskSrv_.Reset(); nrControlMaskSrv_.Reset();
     currentUav_.Reset(); historyUav_.Reset(); currentLowUav_.Reset(); historyLowUav_.Reset(); nrInput8Uav_.Reset(); nrOutput8Uav_.Reset(); postUav_.Reset(); flowUav_.Reset(); motionUav_.Reset(); depthUav_.Reset(); maskUav_.Reset(); nrControlMaskUav_.Reset();
-    width_=height_=0; backFormat_=DXGI_FORMAT_UNKNOWN; hasHistory_=false; motionRouteValid_=false; nvof_.resetHistory();
+    for(auto& entry:directSourceSrvs_){entry.srv.Reset();entry.texture.Reset();}
+    for(auto& entry:blitRtvs_){entry.rtv.Reset();entry.texture.Reset();}
+    directSourceCursor_=blitRtvCursor_=0;
+    width_=height_=0; backFormat_=DXGI_FORMAT_UNKNOWN; hasHistory_=false;hlslHistoryValid_=false; motionRouteValid_=false; nvof_.resetHistory();
 }
 
 void D3D11Pipeline::reset(){ forceResetNext_=true; releaseViews(); if(backend_) backend_->reset(); }
@@ -233,9 +236,28 @@ bool D3D11Pipeline::drawSrv(ID3D11ShaderResourceView* srv,ID3D11RenderTargetView
     ID3D11ShaderResourceView*n=nullptr;context_->PSSetShaderResources(0,1,&n);return true;
 }
 
+ID3D11ShaderResourceView* D3D11Pipeline::tryDirectSourceSrv(ID3D11Texture2D* bb,const D3D11_TEXTURE2D_DESC& desc){
+    if(!bb||desc.SampleDesc.Count!=1||(desc.BindFlags&D3D11_BIND_SHADER_RESOURCE)==0)return nullptr;
+    for(auto& entry:directSourceSrvs_)if(entry.texture.Get()==bb&&entry.srv)return entry.srv.Get();
+    ComPtr<ID3D11ShaderResourceView> srv;if(FAILED(device_->CreateShaderResourceView(bb,nullptr,&srv)))return nullptr;
+    auto& entry=directSourceSrvs_[directSourceCursor_++%directSourceSrvs_.size()];entry.texture=bb;entry.srv=srv;return entry.srv.Get();
+}
+
+ID3D11RenderTargetView* D3D11Pipeline::getBlitRtv(ID3D11Texture2D* bb){
+    if(!bb)return nullptr;
+    for(auto& entry:blitRtvs_)if(entry.texture.Get()==bb&&entry.rtv)return entry.rtv.Get();
+    ComPtr<ID3D11RenderTargetView> rtv;if(FAILED(device_->CreateRenderTargetView(bb,nullptr,&rtv)))return nullptr;
+    auto& entry=blitRtvs_[blitRtvCursor_++%blitRtvs_.size()];entry.texture=bb;entry.rtv=rtv;return entry.rtv.Get();
+}
+
 bool D3D11Pipeline::blit(ID3D11Texture2D*bb,RuntimeStatus&st){
-    ComPtr<ID3D11RenderTargetView>rtv;if(FAILED(device_->CreateRenderTargetView(bb,nullptr,&rtv))){wcscpy_s(st.message,L"backbuffer RTV creation failed");return false;}
-    return drawSrv(postSrv_.Get(),rtv.Get(),width_,height_);
+    if(!allowDirectD3D11SurfaceReuse(nativeD12_!=nullptr)){
+        ComPtr<ID3D11RenderTargetView> rtv;
+        if(FAILED(device_->CreateRenderTargetView(bb,nullptr,&rtv))){wcscpy_s(st.message,L"backbuffer RTV creation failed");return false;}
+        return drawSrv(postSrv_.Get(),rtv.Get(),width_,height_);
+    }
+    auto* rtv=getBlitRtv(bb);if(!rtv){wcscpy_s(st.message,L"backbuffer RTV creation failed");return false;}
+    return drawSrv(postSrv_.Get(),rtv,width_,height_);
 }
 
 bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st,const GuideProbeResult* externalGuide,const SwapchainColorContext* colorContext){
@@ -279,8 +301,13 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     if(!ensureResources(desc,effective,st)||!ensureBackend(settings,runtime,st))return false;
     ComPtr<ID3DDeviceContextState>previous;context1_->SwapDeviceContextState(ownState_.Get(),&previous);
     auto restore=[&](){ComPtr<ID3DDeviceContextState>mine;context1_->SwapDeviceContextState(previous.Get(),&mine);ownState_=mine;};
-    auto t0=std::chrono::high_resolution_clock::now();bool ok=true;
-    if(desc.SampleDesc.Count>1)context_->ResolveSubresource(sourceCopy_.Get(),0,bb,0,desc.Format);else context_->CopyResource(sourceCopy_.Get(),bb);
+    bool ok=true;
+    const bool directSurfaceReuse=allowDirectD3D11SurfaceReuse(nativeD12_!=nullptr);
+    ID3D11ShaderResourceView* frameSourceSrv=directSurfaceReuse?tryDirectSourceSrv(bb,desc):nullptr;
+    if(!frameSourceSrv){
+        if(desc.SampleDesc.Count>1)context_->ResolveSubresource(sourceCopy_.Get(),0,bb,0,desc.Format);else context_->CopyResource(sourceCopy_.Get(),bb);
+        frameSourceSrv=sourceSrv_.Get();
+    }
 
     const ColorEncoding colorEncoding=colorContext?colorContext->decision.encoding:(isSrgbFormat(desc.Format)?ColorEncoding::SdrSrgb:ColorEncoding::SdrLinear);
     const bool hdrActive=colorContext&&colorContext->decision.hdrActive&&colorContext->decision.supported;
@@ -288,7 +315,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     auto uploadMain=[&](){D3D11_MAPPED_SUBRESOURCE m{};if(FAILED(context_->Map(cb_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,&p,sizeof(p));context_->Unmap(cb_.Get(),0);return true;};
     auto uploadBuffer=[&](ID3D11Buffer* buffer,const void* data,size_t bytes){D3D11_MAPPED_SUBRESOURCE m{};if(!buffer||FAILED(context_->Map(buffer,0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,data,bytes);context_->Unmap(buffer,0);return true;};
     if(!uploadMain()){restore();return false;}
-    {ID3D11ShaderResourceView*s[]={sourceSrv_.Get()};ok&=runCompute(convert_.Get(),s,1,currentUav_.Get(),width_,height_);}
+    {ID3D11ShaderResourceView*s[]={frameSourceSrv};ok&=runCompute(convert_.Get(),s,1,currentUav_.Get(),width_,height_);}
     // Feature 18 consumes a bounded display-referred proxy. SDR follows the
     // established UNORM contract; HDR10/scRGB are converted to a reversible
     // paper-white proxy so the neural stage never clips the HDR backbuffer.
@@ -298,10 +325,13 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
 
     const UINT lw=(width_+effective.flowDownsample-1)/effective.flowDownsample;
     const UINT lh=(height_+effective.flowDownsample-1)/effective.flowDownsample;
-    // Refresh the low-resolution luminance history every frame, even when a
-    // native/camera motion route is active. If a later frame falls back to
-    // optical flow, historyLow_ must represent the immediately previous frame.
-    {ID3D11ShaderResourceView*s[]={currentSrv_.Get()};ok&=runCompute(downsample_.Get(),s,1,currentLowUav_.Get(),lw,lh);}
+    const bool maintainHlslHistory=shouldMaintainHlslFlowHistory(settings.motionSource);
+    // HLSL optical flow is an explicit/fallback path only for the Optical Flow
+    // setting. Refresh the low-resolution luminance history every frame when
+    // HLSL optical flow is active; native, camera, NVOFA and zero-motion modes
+    // do not need this extra downsample/history traffic.
+    if(maintainHlslHistory){ID3D11ShaderResourceView*s[]={currentSrv_.Get()};ok&=runCompute(downsample_.Get(),s,1,currentLowUav_.Get(),lw,lh);}
+    else hlslHistoryValid_=false;
 
     // Depth is prepared before selecting motion because geometric camera motion
     // requires the actual game depth buffer.
@@ -375,7 +405,9 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         }
     }
     if(route==MotionRoute::Hlsl){
+        const auto fullHistory=p.hasHistory;p.hasHistory=hlslHistoryValid_?1u:0u;
         p.downsample=effective.flowDownsample;p.pad1=0;uploadMain();ID3D11ShaderResourceView*s[]={currentLowSrv_.Get(),historyLowSrv_.Get()};ok&=runCompute(flow_.Get(),s,2,flowUav_.Get(),lw,lh);
+        p.hasHistory=fullHistory;
     }
     if(route==MotionRoute::Nvof||route==MotionRoute::Hlsl){
         p.pad0=0;uploadMain();ID3D11ShaderResourceView*s[]={flowSrv_.Get()};ok&=runCompute(motion_.Get(),s,1,motionUav_.Get(),width_,height_);
@@ -417,8 +449,10 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     if(!neuralEval){context_->CopyResource(nrOutput8_.Get(),nrInput8_.Get());if(settings.resetOnTemporalGap)forceResetNext_=true;}else forceResetNext_=false;
     {ID3D11ShaderResourceView*s[]={nrOutput8Srv_.Get(),currentSrv_.Get(),maskSrv_.Get(),motionSrv_.Get(),depthSrv_.Get()};ok&=runCompute(post_.Get(),s,5,postUav_.Get(),width_,height_);}
     const bool blitOk=blit(bb,st);ok&=blitOk;if(blitOk)markPipelineStage(st.stageMask,PipelineStage::OutputComposited);else if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::OutputCompositeFailed;
-    context_->CopyResource(history_.Get(),current_.Get());context_->CopyResource(historyLow_.Get(),currentLow_.Get());hasHistory_=true;
-    auto t1=std::chrono::high_resolution_clock::now();st.lastGpuMs=(float)std::chrono::duration<double,std::milli>(t1-t0).count();restore();return ok;
+    context_->CopyResource(history_.Get(),current_.Get());
+    if(maintainHlslHistory){context_->CopyResource(historyLow_.Get(),currentLow_.Get());hlslHistoryValid_=true;}
+    hasHistory_=true;
+    restore();return ok;
 }
 
 } // namespace udlss::gpu
