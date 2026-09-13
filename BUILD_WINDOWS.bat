@@ -34,7 +34,7 @@ if errorlevel 1 exit /b 1
 echo.
 echo [OK] Build output: %OUT%
 echo External NR host: %OUT%\UniversalDLSS5.NRHost.exe
-echo Direct signed-feature runtime: %OUT%\runtime\nvngx_dlssnr.dll
+echo NVIDIA runtime: use Application ^> Import NVIDIA SDK... or place nvngx_dlssnr.dll in the selected runtime folder.
 echo Optional Streamline 1004 stack: sl.interposer.dll + sl.common.dll + sl.dlss_nr.dll
 echo Start UniversalDLSS5.exe as the same user as the target application.
 endlocal

@@ -1,6 +1,8 @@
 #include "ui.hpp"
 #include "processes.hpp"
 #include "inject_client.hpp"
+#include "runtime_importer.hpp"
+#include "resource.h"
 #include "udlss/shared_control.hpp"
 #include "udlss/profile.hpp"
 #include "udlss/runtime_policy.hpp"
@@ -44,7 +46,7 @@ enum class HitKind { Nav, Button, Toggle, Choice, Slider, AppRow };
 
 enum ButtonId : int {
     BTN_REFRESH=1, BTN_ATTACH, BTN_DETACH, BTN_RESET_HISTORY, BTN_BROWSE, BTN_CHECK_RUNTIME,
-    BTN_RETRY_NEURAL, BTN_COPY_DIAG, BTN_SAVE_DIAG
+    BTN_RETRY_NEURAL, BTN_COPY_DIAG, BTN_SAVE_DIAG, BTN_IMPORT_NVIDIA, BTN_OPEN_RUNTIME, BTN_NVIDIA_DOWNLOAD
 };
 enum ToggleId : int {
     TGL_SHOW_ALL=1, TGL_ENABLE, TGL_UI_PROTECT, TGL_CTRL_MASK, TGL_AUTO_MASK, TGL_UI_CORRECTION,
@@ -156,6 +158,32 @@ std::wstring applicationDirectory() {
     wchar_t p[32768]{};
     const DWORD n=GetModuleFileNameW(nullptr,p,_countof(p));
     return fs::path(std::wstring(p,n)).parent_path().wstring();
+}
+
+std::wstring userRuntimeDirectory() {
+    wchar_t local[32768]{};
+    const DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
+    if(n && n<_countof(local)) return (fs::path(std::wstring(local,n))/L"UniversalDLSS5"/L"runtime").wstring();
+    return (fs::path(g.appDir)/L"runtime").wstring();
+}
+
+std::wstring defaultRuntimeDirectory() {
+    const auto besideApp=fs::path(g.appDir)/L"runtime";
+    std::error_code ec;
+    if(fs::is_regular_file(besideApp/L"nvngx_dlssnr.dll",ec)) return besideApp.wstring();
+    return userRuntimeDirectory();
+}
+
+std::wstring loadRuntimePathPreference(const std::wstring& fallback) {
+    wchar_t value[32768]{};
+    DWORD bytes=sizeof(value),type=0;
+    if(RegGetValueW(HKEY_CURRENT_USER,L"Software\UniversalDLSS5",L"RuntimePath",RRF_RT_REG_SZ,&type,value,&bytes)==ERROR_SUCCESS && value[0])
+        return value;
+    return fallback;
+}
+
+void saveRuntimePathPreference(const std::wstring& path) {
+    RegSetKeyValueW(HKEY_CURRENT_USER,L"Software\UniversalDLSS5",L"RuntimePath",REG_SZ,path.c_str(),static_cast<DWORD>((path.size()+1)*sizeof(wchar_t)));
 }
 
 std::wstring profilePath(const std::wstring& exe) {
@@ -368,7 +396,7 @@ void setToggle(int id){switch(id){case TGL_SHOW_ALL:g.showAllProcesses=!g.showAl
 
 void setChoice(int id,int value){switch(id){case CH_PRESET:applyPresetIndex(value);return;case CH_BACKEND:g.settings.backend=(BackendMode)std::clamp(value,0,2);break;case CH_PACING:g.settings.framePacing=(FramePacingMode)std::clamp(value,0,2);g.shared.requestHistoryReset();break;case CH_PASSES:g.settings.nrPasses=(std::uint32_t)std::clamp(value+1,1,4);break;case CH_STYLE:g.settings.nrStyle=(std::uint32_t)std::clamp(value,0,6);break;case CH_MODEL_PRESET:g.settings.nrPreset=(std::uint32_t)std::clamp(value,0,3);g.shared.requestHistoryReset();break;case CH_MOTION:g.settings.motionSource=(MotionSource)std::clamp(value,0,2);g.shared.requestHistoryReset();break;case CH_LATENCY:g.settings.latencyMode=(LatencyMode)std::clamp(value,0,2);break;case CH_DOWNSAMPLE:g.settings.flowDownsample=1u<<std::clamp(value,0,3);break;case CH_DEPTH:g.settings.depthMode=(DepthGuideMode)std::clamp(value,0,3);g.shared.requestHistoryReset();break;case CH_DEBUG:g.settings.debugView=(DebugView)std::clamp(value,0,8);break;case CH_THEME:g.settings.uiTheme=(UiTheme)std::clamp(value,0,2);writeLive();applyTheme();return;default:return;}markCustomPreset();writeLive();}
 
-void handleButton(int id){switch(id){case BTN_REFRESH:refresh();if(g.selectedIndex>=0)selectChanged(g.selectedIndex);break;case BTN_ATTACH:injectCurrentTree();break;case BTN_DETACH:{std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};}g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);g.primaryRendererPid=0;clearInjectedTracking();setBadge(BadgeState::Waiting);setStatusText(L"Unload requested for injected bridges.");break;case BTN_RESET_HISTORY:g.shared.requestHistoryReset();setStatusText(L"Temporal history reset requested.");break;case BTN_BROWSE:{auto path=pickFolder(g.hwnd);if(!path.empty()){g.runtimePath=path;g.shared.setRuntimePath(path.c_str());setStatusText(validateRuntimeFolder(path));}}break;case BTN_CHECK_RUNTIME:setStatusText(validateRuntimeFolder(g.runtimePath));break;case BTN_RETRY_NEURAL:g.shared.requestNeuralRetry();setBadge(BadgeState::Waiting);setStatusText(L"Neural backend retry requested.");break;case BTN_COPY_DIAG:setStatusText(copyDiagnosticsToClipboard()?L"Diagnostics copied to clipboard.":L"No diagnostics available to copy.");break;case BTN_SAVE_DIAG:{auto p=saveDiagnosticsToFile();setStatusText(p.empty()?L"Could not save diagnostics.":L"Saved diagnostics: "+p);}break;}}
+void handleButton(int id){switch(id){case BTN_REFRESH:refresh();if(g.selectedIndex>=0)selectChanged(g.selectedIndex);break;case BTN_ATTACH:injectCurrentTree();break;case BTN_DETACH:{std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};}g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);g.primaryRendererPid=0;clearInjectedTracking();setBadge(BadgeState::Waiting);setStatusText(L"Unload requested for injected bridges.");break;case BTN_RESET_HISTORY:g.shared.requestHistoryReset();setStatusText(L"Temporal history reset requested.");break;case BTN_BROWSE:{auto path=pickFolder(g.hwnd);if(!path.empty()){g.runtimePath=path;saveRuntimePathPreference(path);g.shared.setRuntimePath(path.c_str());setStatusText(validateRuntimeFolder(path));}}break;case BTN_CHECK_RUNTIME:setStatusText(validateRuntimeFolder(g.runtimePath));break;case BTN_IMPORT_NVIDIA:{auto sdk=pickFolder(g.hwnd);if(!sdk.empty()){setStatusText(L"Scanning the selected NVIDIA SDK for signed x64 Neural Rendering runtime files...");UpdateWindow(g.hwnd);auto result=importNvidiaRuntimeFromSdk(sdk,g.runtimePath);g.shared.setRuntimePath(g.runtimePath.c_str());setStatusText(result.summary);}}break;case BTN_OPEN_RUNTIME:{std::error_code ec;fs::create_directories(g.runtimePath,ec);ShellExecuteW(g.hwnd,L"open",g.runtimePath.c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;}case BTN_NVIDIA_DOWNLOAD:ShellExecuteW(g.hwnd,L"open",L"https://developer.nvidia.com/rtx/streamline/get-started",nullptr,nullptr,SW_SHOWNORMAL);break;case BTN_RETRY_NEURAL:g.shared.requestNeuralRetry();setBadge(BadgeState::Waiting);setStatusText(L"Neural backend retry requested.");break;case BTN_COPY_DIAG:setStatusText(copyDiagnosticsToClipboard()?L"Diagnostics copied to clipboard.":L"No diagnostics available to copy.");break;case BTN_SAVE_DIAG:{auto p=saveDiagnosticsToFile();setStatusText(p.empty()?L"Could not save diagnostics.":L"Saved diagnostics: "+p);}break;}}
 
 void drawBadge(float x,float y){const wchar_t*txt=badgeText(g.badgeState);ID2D1Brush*b=g.mutedBrush.Get();if(g.badgeState==BadgeState::Active)b=g.goodBrush.Get();else if(g.badgeState==BadgeState::Passthrough)b=g.warnBrush.Get();else if(g.badgeState==BadgeState::Error)b=g.badBrush.Get();D2D1_RECT_F r=D2D1::RectF(x,y,x+112,y+30);fillRounded(r,15.f,b);drawText(txt,r,g.smallCenterFormat.Get(),g.whiteBrush.Get());}
 
@@ -382,9 +410,11 @@ void drawApplicationPage(float x,float&y,float w){beginPage(L"Application",L"Sel
     float listH=std::min(330.f,std::max(190.f,54.f*(float)std::min<size_t>(g.entries.size(),6)+70.f));auto c=card(x,y,w,listH);float cx=x+18,cy=y+16,cw=w-36;drawText(L"Target application",D2D1::RectF(cx,cy,cx+260,cy+24),g.headingFormat.Get(),g.textBrush.Get());button(L"Refresh",x+w-194,cy-2,82,32,BTN_REFRESH);toggle(L"Show all",g.showAllProcesses,x+w-100,cy-4,82,TGL_SHOW_ALL);cy+=42;
     if(g.entries.empty())drawText(L"No attachable applications found.",D2D1::RectF(cx,cy,cx+cw,cy+40),g.bodyFormat.Get(),g.mutedBrush.Get());
     else for(size_t i=0;i<g.entries.size()&&i<8;++i){auto&e=g.entries[i];D2D1_RECT_F row=D2D1::RectF(cx,cy,cx+cw,cy+44);bool sel=(int)i==g.selectedIndex;if(sel)fillRounded(row,8.f,g.accentSoftBrush.Get());drawText(e.displayName,D2D1::RectF(cx+12,cy+5,cx+cw-190,cy+24),g.bodyFormat.Get(),sel?g.accentBrush.Get():g.textBrush.Get());drawText(processDetail(&e),D2D1::RectF(cx+12,cy+24,cx+cw-12,cy+42),g.smallFormat.Get(),g.mutedBrush.Get());addHit(row,HitKind::AppRow,0,(int)i);cy+=48;if(cy>c.bottom-48)break;}y+=listH+14;
-    float runtimeH=260;card(x,y,w,runtimeH);cy=y+18;drawText(L"Runtime & attachment",D2D1::RectF(x+18,cy,x+w-18,cy+24),g.headingFormat.Get(),g.textBrush.Get());cy+=38;drawText(L"Runtime folder",D2D1::RectF(x+18,cy,x+140,cy+20),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.runtimePath,D2D1::RectF(x+18,cy+20,x+w-200,cy+45),g.bodyFormat.Get(),g.textBrush.Get());button(L"Browse",x+w-176,cy+8,74,34,BTN_BROWSE);button(L"Check",x+w-92,cy+8,74,34,BTN_CHECK_RUNTIME);cy+=62;
+    float runtimeH=366;card(x,y,w,runtimeH);cy=y+18;drawText(L"NVIDIA runtime & attachment",D2D1::RectF(x+18,cy,x+w-18,cy+24),g.headingFormat.Get(),g.textBrush.Get());cy+=38;drawText(L"Runtime destination",D2D1::RectF(x+18,cy,x+160,cy+20),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.runtimePath,D2D1::RectF(x+18,cy+20,x+w-292,cy+45),g.bodyFormat.Get(),g.textBrush.Get());button(L"Choose folder",x+w-276,cy+8,104,34,BTN_BROWSE);button(L"Open runtime",x+w-162,cy+8,104,34,BTN_OPEN_RUNTIME);cy+=62;
+    drawText(L"UniversalDLSS5 does not redistribute NVIDIA's proprietary DLSS runtime. Download/extract the official NVIDIA SDK, then import only the NVIDIA Neural Rendering DLLs into this runtime folder.",D2D1::RectF(x+18,cy,x+w-18,cy+44),g.smallFormat.Get(),g.mutedBrush.Get());cy+=52;button(L"Import NVIDIA SDK...",x+18,cy,170,36,BTN_IMPORT_NVIDIA,true);button(L"NVIDIA download",x+198,cy,132,36,BTN_NVIDIA_DOWNLOAD);button(L"Check runtime",x+340,cy,118,36,BTN_CHECK_RUNTIME);cy+=52;
     std::vector<std::wstring> backends={L"Direct in-game",L"Passthrough",L"External host"};choiceRow(L"Backend",backends,(int)g.settings.backend,x+18,cy,w-36,CH_BACKEND);button(L"Attach",x+18,cy,92,38,BTN_ATTACH,true);button(L"Detach",x+120,cy,92,38,BTN_DETACH);button(L"Reset history",x+222,cy,116,38,BTN_RESET_HISTORY);button(L"Retry neural",x+348,cy,112,38,BTN_RETRY_NEURAL);y+=runtimeH+14;
     card(x,y,w,78);drawText(L"Status",D2D1::RectF(x+18,y+14,x+90,y+34),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.statusText,D2D1::RectF(x+18,y+35,x+w-18,y+70),g.bodyFormat.Get(),g.textBrush.Get());y+=92;
+    card(x,y,w,96);drawText(L"Security notice",D2D1::RectF(x+18,y+14,x+w-18,y+36),g.headingFormat.Get(),g.warnBrush.Get());drawText(L"Some antivirus products may flag DLL injection or graphics API hooking. Verify the GitHub release hash/source and investigate any warning; do not disable security software just to run UniversalDLSS5.",D2D1::RectF(x+18,y+42,x+w-18,y+88),g.smallFormat.Get(),g.mutedBrush.Get());y+=110;
 }
 
 void drawNeuralPage(float x,float&y,float w){beginPage(L"Neural Rendering",L"Feature-18 controls, pass count and presentation pacing.",x,y,w);float cy;
@@ -438,6 +468,6 @@ case WM_DESTROY:KillTimer(h,1);{std::scoped_lock lock(g.maintenanceMutex);g.main
 
 } // namespace
 
-int runUi(HINSTANCE instance,int show){g.inst=instance;g.appDir=applicationDirectory();g.runtimePath=(fs::path(g.appDir)/L"runtime").wstring();SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT co=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(!g.shared.create()){if(SUCCEEDED(co))CoUninitialize();return 2;}WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=windowProc;wc.hInstance=instance;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=nullptr;wc.lpszClassName=L"UniversalDLSS5.Controller";RegisterClassExW(&wc);HWND h=CreateWindowExW(0,wc.lpszClassName,L"Universal DLSS 5 - Neural Rendering Controller",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,1240,820,nullptr,nullptr,instance,nullptr);if(!h){if(SUCCEEDED(co))CoUninitialize();return 3;}ShowWindow(h,show);UpdateWindow(h);MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}if(SUCCEEDED(co))CoUninitialize();return(int)msg.wParam;}
+int runUi(HINSTANCE instance,int show){g.inst=instance;g.appDir=applicationDirectory();g.runtimePath=loadRuntimePathPreference(defaultRuntimeDirectory());SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT co=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(!g.shared.create()){if(SUCCEEDED(co))CoUninitialize();return 2;}WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=windowProc;wc.hInstance=instance;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_APP_ICON));wc.hIconSm=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP_ICON),IMAGE_ICON,16,16,LR_DEFAULTCOLOR);wc.hbrBackground=nullptr;wc.lpszClassName=L"UniversalDLSS5.Controller";RegisterClassExW(&wc);HWND h=CreateWindowExW(0,wc.lpszClassName,L"Universal DLSS 5 - Neural Rendering Controller",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,1240,820,nullptr,nullptr,instance,nullptr);if(!h){if(SUCCEEDED(co))CoUninitialize();return 3;}ShowWindow(h,show);UpdateWindow(h);MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}if(SUCCEEDED(co))CoUninitialize();return(int)msg.wParam;}
 
 } // namespace udlss::controller

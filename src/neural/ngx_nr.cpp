@@ -95,6 +95,17 @@ std::filesystem::path ngxLogDirectory() {
     return out;
 }
 
+std::filesystem::path bridgeModuleDirectory() {
+    HMODULE module{};
+    const auto address=reinterpret_cast<LPCWSTR>(&kProjectId);
+    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,address,&module)) {
+        wchar_t path[32768]{};
+        const DWORD n=GetModuleFileNameW(module,path,_countof(path));
+        if(n && n<_countof(path)) return std::filesystem::path(std::wstring(path,n)).parent_path();
+    }
+    return std::filesystem::current_path();
+}
+
 using SnippetInitExtFn = NVSDK_NGX_Result (NVSDK_CONV *)(unsigned long long,const wchar_t*,ID3D12Device*,NVSDK_NGX_Version,const NVSDK_NGX_Parameter*);
 using SnippetPopulateFn = NVSDK_NGX_Result (NVSDK_CONV *)(NVSDK_NGX_Parameter*);
 using SnippetCreateFn = NVSDK_NGX_Result (NVSDK_CONV *)(ID3D12GraphicsCommandList*,NVSDK_NGX_Feature,NVSDK_NGX_Parameter*,NVSDK_NGX_Handle**);
@@ -298,7 +309,7 @@ public:
             return false;
         }
 
-        const auto forwarderPath=std::filesystem::path(runtime_).parent_path()/L"nvngx.dll_UniversalDLSS5_NRForwarder.dll";
+        const auto forwarderPath=bridgeModuleDirectory()/L"nvngx.dll_UniversalDLSS5_NRForwarder.dll";
         if(std::filesystem::is_regular_file(forwarderPath,ec)) {
             snippetModule_=LoadLibraryExW(forwarderPath.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
             if(snippetModule_) {

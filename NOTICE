@@ -1,0 +1,17 @@
+UniversalDLSS5
+Copyright 2026 MotionflowOffical
+
+This product is licensed under the Apache License, Version 2.0.
+See LICENSE for the complete license text.
+
+UniversalDLSS5 is an independent open-source project. It is not affiliated
+with, sponsored by, or endorsed by NVIDIA Corporation.
+
+NVIDIA, GeForce, RTX, DLSS, NGX, and related marks are trademarks and/or
+registered trademarks of NVIDIA Corporation in the United States and other
+countries. All other trademarks are the property of their respective owners.
+
+Third-party components and build-time SDKs remain subject to their respective
+licenses. See THIRD_PARTY.md and THIRD_PARTY_LICENSES/ for details.
+
+NVIDIA proprietary runtime DLLs are not distributed with UniversalDLSS5.

@@ -1,5 +1,17 @@
 # UniversalDLSS5
 
+> **Experimental graphics-injection software.** UniversalDLSS5 injects its bridge into a user-selected process and hooks DXGI/D3D rendering APIs. Some antivirus/EDR products may flag those techniques heuristically. Verify the GitHub release/hash/source and investigate warnings rather than disabling security software. Avoid anti-cheat, DRM-protected, protected system, or other processes where third-party injection is not permitted.
+
+## Quick start for GitHub releases
+
+1. Install `UniversalDLSS5-Setup-x64.exe` or extract `UniversalDLSS5-Portable-x64.zip`.
+2. Download and extract an official NVIDIA DLSS/Streamline developer package containing the DLSS Neural Rendering runtime you are authorized to use. Start with NVIDIA's DLSS page (`https://developer.nvidia.com/rtx/dlss`), Streamline download page (`https://developer.nvidia.com/rtx/streamline/get-started`), or NVIDIA's Streamline release packages (`https://github.com/NVIDIA-RTX/Streamline/releases`).
+3. Start `UniversalDLSS5.exe`, open **Application**, then use **Import NVIDIA SDK...** and select the extracted NVIDIA SDK root.
+4. The importer copies only approved x64, NVIDIA-signed Neural Rendering/Streamline DLLs into the selected `runtime` folder. `nvngx_dlssnr.dll` is required; `sl.interposer.dll`, `sl.common.dll`, and `sl.dlss_nr.dll` are optional.
+5. Press **Check runtime**, select a running application, then **Attach**.
+
+The installer and portable release deliberately do **not** include NVIDIA proprietary runtime binaries. See [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) for the detailed setup and security notes.
+
 ## Stable renderer ownership, scheduler, multipass, and controller UI update
 
 - **Primary-renderer election:** all injected bridge statuses are scored by render area, API, process role, activity and plausible present rate. A 2.5-second freshness grace plus hysteresis prevents helper/overlay swapchains from taking ownership because they publish more frequently.
@@ -25,12 +37,6 @@
 - **No CPU frame path:** color/depth/motion/control resources remain on GPU. No screenshot capture, framebuffer staging readback, WGC, BitBlt, or arbitrary process-memory scanning is added.
 - **External host preserved:** the v0.2.7 NRHost path remains available both as an explicit backend and as an automatic fallback when the in-game mount cannot initialize.
 - **Honest limitation:** automatic native-resource tracking is currently D3D11-focused. D3D12 source games still use the existing D3D12On12 guide path unless an explicit game adapter provides richer guides.
-
-## Important design rule: no screenshots
-
-The frame path never uses desktop/window capture, GDI screenshots, D3D staging textures, or D3D12 readback heaps. Frames move through GPU resources only. CPU access is limited to configuration, process control, diagnostics, and small constant-buffer uploads.
-
-`tools/audit_no_readback.py` enforces this rule for the source tree.
 
 ## Current rendering paths
 
@@ -90,16 +96,35 @@ Requirements:
 - CMake 3.24+
 - Git
 - NVIDIA driver appropriate for the hardware/runtime being tested
-- Your authorized `nvngx_dlssnr.dll` runtime
 
-Run:
+A proprietary NVIDIA runtime is **not required to compile the project**. It is imported or placed in the runtime folder after building/installation.
+
+Build the development binaries and tests with:
 
 ```bat
 BUILD_WINDOWS.bat
 ```
 
-The script builds the x64 controller/injector/bridge/test app and also builds x86 injector/bridge binaries for 32-bit target attachment.
-The build also produces a 32-bit bridge/injector. The default external-host architecture is designed so a 32-bit source process can hand GPU-shared resources to the separately built x64 `UniversalDLSS5.NRHost.exe`, avoiding a requirement for a 32-bit DLSS-NR runtime. This cross-bitness path still requires Windows runtime validation on real hardware.
+The script builds the x64 controller/injector/bridge/NR host plus x86 injector/bridge binaries for 32-bit target attachment, then runs the portable test suite and package/no-readback audits.
+
+### Building GitHub release artifacts
+
+Install [NSIS 3.x](https://nsis.sourceforge.io/Download) and ensure `makensis.exe` is on `PATH`, then run:
+
+```bat
+BUILD_RELEASE.bat
+```
+
+After the normal x64/x86 build succeeds, CPack creates:
+
+```text
+release\UniversalDLSS5-Setup-x64.exe
+release\UniversalDLSS5-Portable-x64.zip
+```
+
+The installer creates the normal application installation, shortcuts, shaders, documentation, and an empty NVIDIA runtime folder. Packaging intentionally installs only `runtime\README.txt`; it never sweeps the developer's local `runtime` directory, so a locally supplied `nvngx_dlssnr.dll` or Streamline DLL cannot accidentally enter the GitHub release.
+
+The supplied UniversalDLSS5 logo is embedded in the controller executable and used for the NSIS installer/uninstaller.
 
 ### Optional NVIDIA Optical Flow SDK
 
@@ -112,23 +137,34 @@ BUILD_WINDOWS.bat
 
 The build looks for `NvOFInterface\nvOpticalFlowD3D11.h` or an `include` directory. If the headers are absent, **Auto** falls back to zero motion rather than feeding the neural model the coarse HLSL block matcher. The HLSL route remains available through the explicit **Optical flow (NVOFA/HLSL experimental)** motion mode.
 
-## Runtime folder
+## NVIDIA DLSS 5 / Neural Rendering runtime
 
-The simplest setup is to place your authorized, matching runtime set in the source `runtime\` folder **before** running `BUILD_WINDOWS.bat`. The build copies the entire folder into `build\x64\bin\Release\runtime\`, next to the compiled controller/bridge. You may instead copy the same files directly into that built `runtime\` folder after compilation.
-
-The runtime validator requires `nvngx_dlssnr.dll` because it is also the fallback used when the optional Streamline plugin cannot initialize:
+UniversalDLSS5 does not redistribute NVIDIA proprietary runtime DLLs. The required signed-Feature-18 runtime is:
 
 ```text
 nvngx_dlssnr.dll
 ```
 
-`BUILD_WINDOWS.bat` also builds `UniversalDLSS5.NRHost.exe` and `nvngx.dll_UniversalDLSS5_NRForwarder.dll` into the x64 output folder. Both are UniversalDLSS5 project code, not NVIDIA runtime binaries.
+The optional Streamline DLSS-NR route additionally uses:
 
-`UniversalDLSS5.Bridge.dll` and `nvngx.dll_UniversalDLSS5_NRForwarder.dll` do **not** need to be copied into the game directory. The controller injects the bridge by absolute path, and the in-game backend loads the forwarder from the controller output directory (the parent of the selected `runtime\` folder).
+```text
+sl.interposer.dll
+sl.common.dll
+sl.dlss_nr.dll
+```
 
-For the optional **Streamline feature-1004** route, also place `sl.interposer.dll`, `sl.common.dll`, and `sl.dlss_nr.dll` in the same runtime folder. The build obtains only public Streamline/NGX headers from pinned source repositories; all proprietary runtime DLLs remain user-supplied. The controller defaults to this output runtime directory but also lets you select another folder.
+In the controller's **Application** page you can:
 
-Proprietary NVIDIA runtime DLLs are intentionally not included in this repository or ZIP.
+- choose the runtime destination folder;
+- open the runtime folder;
+- open the official NVIDIA download page;
+- select **Import NVIDIA SDK...** and point at an extracted NVIDIA SDK root.
+
+The importer recursively searches only for the approved filenames, rejects non-x64 binaries, verifies Authenticode and an NVIDIA signer, and copies accepted files to the selected runtime destination. If the chosen SDK package does not contain `nvngx_dlssnr.dll`, the import remains incomplete and the controller tells you what is missing.
+
+Manual placement is also supported: use the exact **Runtime destination** shown in the Application page. Installed builds default to `%LOCALAPPDATA%\UniversalDLSS5\runtime\` unless a populated next-to-app runtime already exists; portable/developer builds can continue using their local `runtime\` folder. The chosen destination is remembered. `UniversalDLSS5.Bridge.dll`, `UniversalDLSS5.Bridge32.dll`, `UniversalDLSS5.NRHost.exe`, and `nvngx.dll_UniversalDLSS5_NRForwarder.dll` are project binaries and stay beside the application; they do not go in the game directory or NVIDIA runtime folder.
+
+See `docs/NVIDIA_RUNTIME_SETUP.md` for detailed setup.
 
 ## Running
 
@@ -148,3 +184,15 @@ Avoid anti-cheat/DRM/system processes. This project does not include bypasses fo
 Portable tests cover settings normalization, legacy-profile migration to the direct in-game backend, NVOFA policy, tuning presets, reset-generation handling, swapchain-primary selection, runtime-file policy (signed-feature runtime required, Streamline plugin optional), injection/CIG policy, low-integrity IPC security, runtime/stage diagnostics, D3D12 flip-model backbuffer rotation, app grouping, persistent NGX failures, D3D12 neural routing, native-motion/depth/camera policies, Streamline mount wiring, external-host fallback policy, and Windows build wiring. The no-readback audit separately checks the rendering source for screenshot/staging/readback APIs.
 
 The Linux CI-style checks used while producing this package exercise the portable components only; the Windows interception binaries must be compiled and runtime-tested on Windows because this environment does not provide the Windows SDK/MSVC graphics toolchain.
+
+## License and trademarks
+
+Copyright 2026 MotionflowOffical.
+
+UniversalDLSS5 is open source under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Third-party components remain under their own licenses; attribution and license information is collected in [`THIRD_PARTY.md`](THIRD_PARTY.md) and [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/).
+
+Copyright 2026 **MotionflowOffical**.
+
+UniversalDLSS5 is an independent open-source project and is **not affiliated with, sponsored by, or endorsed by NVIDIA Corporation**. NVIDIA, GeForce, RTX, DLSS, NGX, and related marks are trademarks and/or registered trademarks of NVIDIA Corporation. The Apache-2.0 license applies to UniversalDLSS5's own code and documentation; it does not relicense NVIDIA SDKs or user-supplied NVIDIA runtime binaries.
+
+The NSIS installer displays the Apache-2.0 license during setup and installs `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, and the `THIRD_PARTY_LICENSES` directory beside the application.

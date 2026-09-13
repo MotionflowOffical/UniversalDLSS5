@@ -1,0 +1,20 @@
+NVIDIA RTX / DLSS / NGX SDK NOTICE
+
+UniversalDLSS5 can use public NVIDIA DLSS/NGX SDK headers and import libraries
+at build time and user-supplied NVIDIA Neural Rendering runtime DLLs at run
+time. Those NVIDIA materials are NOT licensed under Apache-2.0 and are NOT
+redistributed as part of the UniversalDLSS5 installer or portable release.
+
+NVIDIA RTX SDK license:
+https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt
+
+NVIDIA Streamline license and third-party notices:
+https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt
+https://github.com/NVIDIA-RTX/Streamline/blob/main/3rd-party-licenses.md
+
+Users and downstream distributors are responsible for complying with the
+NVIDIA terms applicable to any SDK or runtime binaries they obtain directly
+from NVIDIA.
+
+UniversalDLSS5 is an independent open-source project and is not affiliated
+with, sponsored by, or endorsed by NVIDIA Corporation.

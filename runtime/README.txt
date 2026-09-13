@@ -1,41 +1,49 @@
-UniversalDLSS5 v0.2.8 runtime folder
-===================================
+UniversalDLSS5 v0.2.8 NVIDIA runtime folder
+===========================================
 
-Direct in-game NR is the recommended backend. UniversalDLSS5 never bundles NVIDIA/Streamline runtime DLLs.
+This directory is intentionally shipped WITHOUT NVIDIA proprietary runtime DLLs.
 
-Required for the proven direct signed-feature-18 route:
+Required for the direct signed Feature-18 DLSS Neural Rendering route:
   nvngx_dlssnr.dll
 
-Optional Streamline feature-1004 route (preferred when a complete authorized stack is supplied):
+optional Streamline DLSS-NR route when a complete matching stack is available:
   sl.interposer.dll
   sl.common.dll
   sl.dlss_nr.dll
   nvngx_dlssnr.dll
 
-The optional Streamline files are loaded by the injected in-game mount. The game does not need to ship native DLSS or Streamline; UniversalDLSS5 initializes Streamline itself, attaches its same-adapter D3D12 device, supplies frame tokens/constants/resource tags, and evaluates feature 1004.
+Recommended setup
+-----------------
+1. Download/extract an official NVIDIA DLSS/Streamline developer package that contains
+   the Neural Rendering runtime you are authorized to use.
+2. Start UniversalDLSS5.exe.
+3. Application -> NVIDIA runtime & attachment -> Import NVIDIA SDK...
+4. Select the extracted NVIDIA SDK root.
+5. The importer searches only for the approved filenames above, requires x64 Windows
+   binaries, validates Authenticode/NVIDIA signing, and copies accepted files here.
+6. Press Check runtime. nvngx_dlssnr.dll is required.
 
-If the optional Streamline stack is incomplete or unavailable, the in-game mount falls back to the already-proven caller-compatible signed feature-18 route through:
-  nvngx.dll_UniversalDLSS5_NRForwarder.dll
+Official NVIDIA starting points:
+  https://developer.nvidia.com/rtx/dlss
+  https://developer.nvidia.com/rtx/streamline/get-started
+  https://github.com/NVIDIA-RTX/Streamline/releases
 
-External NRHost remains available as a fallback/diagnostic backend.
+Manual setup
+------------
+Use the exact Runtime destination shown by the Application page. Installed builds normally
+default to %LOCALAPPDATA%\UniversalDLSS5\runtime so the SDK importer does not require
+writing into Program Files. A portable/developer build with an already-populated local runtime
+folder continues using that local folder. The chosen destination is remembered.
 
-Guide priority in Auto mode:
-  1. explicit GameGuides native motion
-  2. detected game-native velocity/motion resource
-  3. camera matrices + real game depth reconstruction
-  4. NVIDIA Optical Flow (when SDK headers/driver path are available)
-  5. safe zero motion
+Do not substitute nvngx_dlss.dll (DLSS Super Resolution) for nvngx_dlssnr.dll.
 
-The coarse HLSL block matcher is intentionally NOT an automatic fallback.
-Select "Optical flow (NVOFA/HLSL experimental)" explicitly to test it.
+UniversalDLSS5.Bridge.dll and nvngx.dll_UniversalDLSS5_NRForwarder.dll are project files
+and stay beside UniversalDLSS5.exe. They do not need to be copied into a game directory.
 
-All frame/color/depth/motion resources stay GPU-resident. UniversalDLSS5 does not use screenshot capture, staging framebuffer readback, BitBlt, WGC, or CPU pixel transfer.
+Security note
+-------------
+UniversalDLSS5 performs user-selected DLL injection and graphics API hooking. Some
+antivirus/EDR products may flag these techniques heuristically. Verify the release source
+and published hashes; do not disable security software merely to run the application.
 
-BUILD_WINDOWS.bat copies this folder to:
-  build\x64\bin\Release\runtime\
-
-The source ZIP intentionally contains none of the proprietary DLLs listed above.
-
-
-Deployment note:
-  UniversalDLSS5.Bridge.dll and nvngx.dll_UniversalDLSS5_NRForwarder.dll stay in the built x64 output directory; they do not need to be copied beside the game executable.
+The source/release packaging rules deliberately exclude NVIDIA proprietary DLLs.

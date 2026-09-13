@@ -112,6 +112,12 @@ if(UDLSS_BUILD_TESTS)
   add_executable(frame_pacing_policy_tests tests/frame_pacing_policy_tests.cpp)
   target_link_libraries(frame_pacing_policy_tests PRIVATE udlss_common)
   add_test(NAME frame_pacing_policy_tests COMMAND frame_pacing_policy_tests)
+  add_executable(runtime_import_policy_tests tests/runtime_import_policy_tests.cpp)
+  target_link_libraries(runtime_import_policy_tests PRIVATE udlss_common)
+  add_test(NAME runtime_import_policy_tests COMMAND runtime_import_policy_tests)
+  add_executable(release_packaging_tests tests/release_packaging_tests.cpp)
+  target_compile_definitions(release_packaging_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME release_packaging_tests COMMAND release_packaging_tests)
   add_executable(v029_architecture_wiring_tests tests/v029_architecture_wiring_tests.cpp)
   target_compile_definitions(v029_architecture_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME v029_architecture_wiring_tests COMMAND v029_architecture_wiring_tests)
@@ -124,9 +130,11 @@ if(WIN32)
   target_link_libraries(udlss_profile PUBLIC udlss_common advapi32)
 
   add_executable(UniversalDLSS5 WIN32
-    src/controller/main.cpp src/controller/processes.cpp src/controller/inject_client.cpp src/controller/ui.cpp)
+    src/controller/main.cpp src/controller/processes.cpp src/controller/inject_client.cpp
+    src/controller/runtime_importer.cpp src/controller/ui.cpp resources/UniversalDLSS5.rc)
   target_compile_definitions(UniversalDLSS5 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(UniversalDLSS5 PRIVATE udlss_profile shell32 shlwapi version dwmapi d2d1 dwrite ole32)
+  target_include_directories(UniversalDLSS5 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/controller" "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+  target_link_libraries(UniversalDLSS5 PRIVATE udlss_profile shell32 shlwapi version dwmapi d2d1 dwrite ole32 wintrust crypt32)
 
   add_executable(UniversalDLSS5.Injector src/injector/main.cpp src/injector/injector.cpp)
   target_link_libraries(UniversalDLSS5.Injector PRIVATE udlss_common advapi32)
@@ -203,4 +211,69 @@ if(WIN32)
   endif()
   set_target_properties(${_udlss_runtime_targets}
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+  # Release/install manifest. Deliberately install only the source-owned runtime README,
+  # never the developer's runtime directory, so proprietary NVIDIA DLLs cannot leak into CPack.
+  install(TARGETS UniversalDLSS5 UniversalDLSS5.Injector UniversalDLSS5.Bridge
+    RUNTIME DESTINATION . LIBRARY DESTINATION .)
+  if(TARGET UniversalDLSS5.NRHost)
+    install(TARGETS UniversalDLSS5.NRHost RUNTIME DESTINATION .)
+  endif()
+  if(TARGET UniversalDLSS5.NRForwarder)
+    install(TARGETS UniversalDLSS5.NRForwarder RUNTIME DESTINATION . LIBRARY DESTINATION .)
+  endif()
+  install(FILES
+    "${CMAKE_BINARY_DIR}/bin/Release/UniversalDLSS5.Injector32.exe"
+    "${CMAKE_BINARY_DIR}/bin/Release/UniversalDLSS5.Bridge32.dll"
+    DESTINATION . OPTIONAL)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/shaders/" DESTINATION shaders
+    FILES_MATCHING PATTERN "*.hlsl")
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/README.txt" DESTINATION runtime)
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/NOTICE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY.md"
+    DESTINATION .)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_LICENSES/"
+    DESTINATION THIRD_PARTY_LICENSES)
+  # Preserve the exact upstream license files for dependencies that are present
+  # in this Windows build. These are copied from the pinned FetchContent/SDK
+  # checkouts rather than paraphrased.
+  if(DEFINED minhook_SOURCE_DIR AND EXISTS "${minhook_SOURCE_DIR}/LICENSE.txt")
+    install(FILES "${minhook_SOURCE_DIR}/LICENSE.txt"
+      DESTINATION THIRD_PARTY_LICENSES RENAME "MinHook-UPSTREAM-LICENSE.txt")
+  endif()
+  if(UDLSS_WITH_NGX_NR AND EXISTS "${UDLSS_NGX_ROOT}/LICENSE.txt")
+    install(FILES "${UDLSS_NGX_ROOT}/LICENSE.txt"
+      DESTINATION THIRD_PARTY_LICENSES RENAME "NVIDIA-DLSS-SDK-LICENSE.txt")
+  endif()
+  if(UDLSS_WITH_STREAMLINE AND EXISTS "${UDLSS_STREAMLINE_ROOT}/license.txt")
+    install(FILES "${UDLSS_STREAMLINE_ROOT}/license.txt"
+      DESTINATION THIRD_PARTY_LICENSES RENAME "NVIDIA-Streamline-UPSTREAM-LICENSE.txt")
+  endif()
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/NVIDIA_RUNTIME_SETUP.md" DESTINATION docs)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/UniversalDLSS5.png" DESTINATION resources)
+
+  set(CPACK_PACKAGE_NAME "UniversalDLSS5")
+  set(CPACK_PACKAGE_VENDOR "MotionflowOffical")
+  set(CPACK_PACKAGE_CONTACT "MotionflowOffical")
+  set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Universal DLSS 5 experimental neural-rendering injector/controller")
+  set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY "UniversalDLSS5")
+  set(CPACK_PACKAGE_EXECUTABLES "UniversalDLSS5" "Universal DLSS 5")
+  set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
+  set(CPACK_CREATE_DESKTOP_LINKS "UniversalDLSS5")
+  set(CPACK_NSIS_DISPLAY_NAME "Universal DLSS 5")
+  set(CPACK_NSIS_PACKAGE_NAME "Universal DLSS 5")
+  set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/UniversalDLSS5.ico")
+  set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/UniversalDLSS5.ico")
+  set(CPACK_NSIS_INSTALLED_ICON_NAME "UniversalDLSS5.exe")
+  set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+  set(CPACK_NSIS_MODIFY_PATH OFF)
+  set(CPACK_NSIS_MUI_FINISHPAGE_RUN "UniversalDLSS5.exe")
+  set(CPACK_NSIS_BRANDING_TEXT "Universal DLSS 5 | Copyright 2026 MotionflowOffical")
+  set(CPACK_GENERATOR "NSIS;ZIP")
+  include(CPack)
 endif()

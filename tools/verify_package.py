@@ -5,19 +5,19 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ALLOW_LOCAL_RUNTIME = "--allow-local-runtime" in sys.argv[1:]
 REQUIRED = [
-    'CMakeLists.txt', 'BUILD_WINDOWS.bat', 'README.md', 'THIRD_PARTY.md',
+    'CMakeLists.txt', 'BUILD_WINDOWS.bat', 'BUILD_RELEASE.bat', 'README.md', 'THIRD_PARTY.md',
     'include/udlss/settings.hpp', 'include/udlss/shared_control.hpp', 'include/udlss/guide_quality_policy.hpp', 'include/udlss/resource_extraction_policy.hpp', 'include/udlss/game_guides_api.hpp',
     'include/udlss/native_motion_policy.hpp', 'include/udlss/camera_matrix_policy.hpp', 'include/udlss/camera_motion_math.hpp', 'include/udlss/motion_route_policy.hpp',
-    'include/udlss/runtime_policy.hpp', 'include/udlss/injection_policy.hpp', 'include/udlss/neural_scheduler_policy.hpp', 'include/udlss/renderer_selection_policy.hpp',
+    'include/udlss/runtime_policy.hpp', 'include/udlss/runtime_import_policy.hpp', 'include/udlss/injection_policy.hpp', 'include/udlss/neural_scheduler_policy.hpp', 'include/udlss/renderer_selection_policy.hpp',
     'include/udlss/runtime_diagnostics.hpp', 'include/udlss/d3d12_backbuffer_policy.hpp', 'include/udlss/backend_policy.hpp', 'include/udlss/external_host_policy.hpp',
-    'src/controller/ui.cpp', 'src/bridge/dxgi_hooks.cpp',
+    'src/controller/ui.cpp', 'src/controller/runtime_importer.cpp', 'src/controller/runtime_importer.hpp', 'src/controller/resource.h', 'src/bridge/dxgi_hooks.cpp',
     'src/gpu/d3d11_pipeline.cpp', 'src/gpu/d3d11_guide_extractor.cpp', 'src/gpu/d3d11_resource_tracker.cpp', 'src/gpu/d3d11_resource_tracker.hpp', 'src/gpu/d3d11_camera_tracker.cpp', 'src/gpu/d3d11_camera_tracker.hpp', 'src/gpu/d3d12_on12.cpp', 'src/gpu/nv_optical_flow.cpp',
     'src/neural/ingame_nr.cpp', 'src/neural/ngx_nr.cpp', 'src/neural/external_host.cpp', 'src/neural/external_host_protocol.hpp', 'src/neural/streamline_nr.cpp', 'src/neural/passthrough.cpp', 'src/host/main.cpp', 'src/host/nr_forwarder.cpp',
     'shaders/convert.hlsl', 'shaders/downsample.hlsl', 'shaders/flow.hlsl',
     'shaders/motion.hlsl', 'shaders/native_motion_convert.hlsl', 'shaders/camera_motion.hlsl', 'shaders/mask.hlsl', 'shaders/depth_convert.hlsl', 'shaders/post.hlsl', 'shaders/blit.hlsl',
-    'runtime/README.txt',
+    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md',
     'tests/guide_quality_policy_tests.cpp', 'tests/ingame_nr_policy_tests.cpp', 'tests/ingame_nr_parameters_tests.cpp', 'tests/streamline_mount_policy_tests.cpp', 'tests/motion_route_policy_tests.cpp', 'tests/camera_motion_math_tests.cpp', 'tests/d3d11_direct_mount_motion_tests.cpp', 'tests/d3d11_depth_tracking_tests.cpp', 'tests/camera_matrix_policy_tests.cpp', 'tests/native_motion_policy_tests.cpp', 'tests/resource_tracker_semantic_tests.cpp', 'tests/resource_extraction_policy_tests.cpp', 'tests/runtime_diagnostics_tests.cpp', 'tests/d3d12_backbuffer_policy_tests.cpp', 'tests/backend_policy_tests.cpp',
-    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp',
+    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp', 'tests/runtime_import_policy_tests.cpp', 'tests/release_packaging_tests.cpp',
     'include/udlss/app_picker_policy.hpp', 'include/udlss/ngx_failure_policy.hpp', 'include/udlss/neural_route_policy.hpp',
     'examples/GameGuidesAdapter/README.md', 'examples/GameGuidesAdapter/template.cpp',
 ]
@@ -222,5 +222,38 @@ for token in ['OMGetRenderTargets', 'UniversalDLSS5.GameGuides.dll', 'GameGuide_
 for token in ['gameDepthActive', 'controlMaskActive', 'temporalResetThisFrame', 'guideFields', 'nativeMotionCandidateId', 'nativeMotionCandidateScore', 'cameraCurrentValid', 'cameraPreviousValid', 'cameraConfidence', 'temporalReason']:
     if token not in shared:
         fail(f'v0.2.8 guide diagnostic field missing: {token}')
+
+
+# Release/runtime-import wiring: proprietary NVIDIA files are imported after install, never packaged.
+release_cmake = (ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
+for token in ['include(CPack)', 'CPACK_NSIS_MUI_ICON', 'resources/UniversalDLSS5.rc',
+              'src/controller/runtime_importer.cpp', 'runtime/README.txt']:
+    if token not in release_cmake:
+        fail(f'release/installer wiring missing: {token}')
+if 'install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/runtime"' in release_cmake:
+    fail('release packaging must never sweep the local runtime directory')
+
+release_bat = (ROOT / 'BUILD_RELEASE.bat').read_text(encoding='utf-8')
+for token in ['cpack -G NSIS', 'UniversalDLSS5-Setup-x64', 'cpack -G ZIP', 'UniversalDLSS5-Portable-x64']:
+    if token not in release_bat:
+        fail(f'release builder missing: {token}')
+
+import_policy = (ROOT / 'include/udlss/runtime_import_policy.hpp').read_text(encoding='utf-8')
+for token in ['nvngx_dlssnr.dll', 'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_nr.dll', 'RuntimeImportKind::Rejected']:
+    if token not in import_policy:
+        fail(f'runtime import allow-list missing: {token}')
+for forbidden in ['UniversalDLSS5.Bridge.dll', 'nvngx.dll_UniversalDLSS5_NRForwarder.dll']:
+    if forbidden in import_policy:
+        fail(f'project DLL must not be accepted by NVIDIA runtime importer: {forbidden}')
+
+importer = (ROOT / 'src/controller/runtime_importer.cpp').read_text(encoding='utf-8')
+for token in ['WinVerifyTrust', 'WTHelperGetProvSignerFromChain', 'IMAGE_FILE_MACHINE_AMD64', 'runtimeImportKind', 'NVIDIA']:
+    if token not in importer:
+        fail(f'secure NVIDIA runtime importer missing: {token}')
+
+readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+for token in ['Import NVIDIA SDK', 'nvngx_dlssnr.dll', 'antivirus', 'BUILD_RELEASE.bat']:
+    if token.lower() not in readme.lower():
+        fail(f'README release/runtime setup missing: {token}')
 
 print('PASS: package structure, pinned dependencies, shaders, and runtime redistribution policy verified')
