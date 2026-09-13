@@ -1,4 +1,5 @@
 #include "d3d12_resource_tracker.hpp"
+#include "../bridge/hook_lifecycle.hpp"
 #include "udlss/guide_candidate_policy.hpp"
 #include <MinHook.h>
 #include <algorithm>
@@ -81,7 +82,8 @@ Entry* getOrCreate(ID3D12Resource* r){
     auto [pos,_]=g.entries.emplace(r,std::move(e));return &pos->second;
 }
 void STDMETHODCALLTYPE hkResourceBarrier(ID3D12GraphicsCommandList* list,UINT count,const D3D12_RESOURCE_BARRIER* barriers){
-    if(!g_suppressed)globalD3D12ResourceTracker().onResourceBarriers(list,count,barriers);
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed)globalD3D12ResourceTracker().onResourceBarriers(list,count,barriers);
     origResourceBarrier(list,count,barriers);
 }
 }

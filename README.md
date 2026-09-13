@@ -1,6 +1,6 @@
 # UniversalDLSS5
 
-**Current version:** v0.3.1
+**Current version:** v0.3.2
 
 > **Experimental graphics-injection software.** UniversalDLSS5 injects its bridge into a user-selected process and hooks DXGI/D3D rendering APIs. Some antivirus/EDR products may flag those techniques heuristically. Verify the GitHub release/hash/source and investigate warnings rather than disabling security software. Avoid anti-cheat, DRM-protected, protected system, or other processes where third-party injection is not permitted.
 
@@ -13,6 +13,17 @@
 5. Press **Check runtime**, select a running application, then **Attach**.
 
 The installer and portable release deliberately do **not** include NVIDIA proprietary runtime binaries. See [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) for the detailed setup and security notes.
+
+### v0.3.2 performance, stability, and controller update
+
+- **Feature-18 timing:** direct Feature-18 execution now uses D3D12 timestamp queries so diagnostics can report neural GPU execution separately from synchronized pacing waits.
+- **Lower hot-path overhead:** persistent synchronization objects, lazy neural scratch/control resources, reduced unnecessary optical-flow work, and reduced queue/guide discovery work cut injector-side overhead without lowering neural-rendering resolution.
+- **D3D11 black-screen regression fixed:** native D3D11 games use the conservative owned-source/fresh-backbuffer-view path while safe injector-owned D3D12On12 staging optimizations remain enabled.
+- **Safer detach:** bridge unload now disables new hook work, drains in-flight detours, then destroys graphics/neural state, preventing teardown from freeing resources underneath a running Present/render callback.
+- **Controller app selector:** the running-application list has its own mouse-wheel scrolling and scrollbar, and keeps the selected application visible.
+- **Refresh feedback:** Refresh immediately enters a short `Refreshing...` state so the action remains visually responsive even when process enumeration completes almost instantly.
+- **No quality-downscale performance mode:** final Feature-18 output remains at the configured processing resolution; lower-resolution work is reserved for auxiliary guide/analysis paths.
+- See [`docs/V0.3.2_RELEASE.md`](docs/V0.3.2_RELEASE.md).
 
 ### v0.3.1 HDR / color-space compatibility
 
@@ -209,7 +220,7 @@ See `docs/NVIDIA_RUNTIME_SETUP.md` for detailed setup.
 2. Select the running root application, such as `chrome.exe` or a 2D game.
 3. Select the runtime folder.
 4. Choose a preset and adjust sliders if desired.
-5. Leave **Direct in-game NR (recommended)** selected for normal testing, then press **Attach**. If the direct mount fails, v0.3.1 automatically attempts the External NR Host before passthrough.
+5. Leave **Direct in-game NR (recommended)** selected for normal testing, then press **Attach**. If the direct mount fails, the controller automatically attempts the External NR Host before passthrough.
 6. For multi-process browsers, leave **Attach process tree** enabled; the controller continues watching for a DXGI GPU child that appears later.
 7. Use **Reset history** after a large tuning change if temporal artifacts persist.
 8. Press **Detach** to ask all injected bridges in the session to unload.

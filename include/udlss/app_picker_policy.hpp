@@ -110,4 +110,38 @@ inline const AppPickerGroup* findApplicationGroup(const std::vector<AppPickerGro
     return nullptr;
 }
 
+inline constexpr std::uint64_t kAppPickerRefreshFeedbackMs = 450;
+
+inline int appPickerVisibleRows(float viewportHeight,float rowHeight) {
+    if(viewportHeight<=0.f || rowHeight<=0.f) return 1;
+    return std::max(1,static_cast<int>(viewportHeight/rowHeight));
+}
+
+inline int clampAppPickerScroll(int scroll,std::size_t totalEntries,int visibleRows) {
+    visibleRows=std::max(1,visibleRows);
+    const int maxScroll=std::max(0,static_cast<int>(totalEntries)-visibleRows);
+    return std::clamp(scroll,0,maxScroll);
+}
+
+inline int scrollAppPicker(int scroll,int wheelDelta,std::size_t totalEntries,int visibleRows) {
+    if(wheelDelta==0) return clampAppPickerScroll(scroll,totalEntries,visibleRows);
+    int notches=wheelDelta/120;
+    if(notches==0) notches=wheelDelta>0?1:-1;
+    return clampAppPickerScroll(scroll-notches,totalEntries,visibleRows);
+}
+
+inline int ensureAppPickerSelectionVisible(int scroll,int selectedIndex,std::size_t totalEntries,int visibleRows) {
+    scroll=clampAppPickerScroll(scroll,totalEntries,visibleRows);
+    if(selectedIndex<0 || totalEntries==0) return scroll;
+    selectedIndex=std::clamp(selectedIndex,0,static_cast<int>(totalEntries)-1);
+    visibleRows=std::max(1,visibleRows);
+    if(selectedIndex<scroll) scroll=selectedIndex;
+    else if(selectedIndex>=scroll+visibleRows) scroll=selectedIndex-visibleRows+1;
+    return clampAppPickerScroll(scroll,totalEntries,visibleRows);
+}
+
+inline bool appPickerRefreshFeedbackActive(std::uint64_t startedAtMs,std::uint64_t nowMs) {
+    return nowMs>=startedAtMs && (nowMs-startedAtMs)<kAppPickerRefreshFeedbackMs;
+}
+
 } // namespace udlss

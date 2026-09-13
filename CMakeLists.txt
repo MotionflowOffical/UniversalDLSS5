@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(UniversalDLSS5 VERSION 0.3.1 LANGUAGES C CXX)
+project(UniversalDLSS5 VERSION 0.3.2 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -94,6 +94,9 @@ if(UDLSS_BUILD_TESTS)
   add_executable(app_picker_policy_tests tests/app_picker_policy_tests.cpp)
   target_link_libraries(app_picker_policy_tests PRIVATE udlss_common)
   add_test(NAME app_picker_policy_tests COMMAND app_picker_policy_tests)
+  add_executable(controller_app_picker_wiring_tests tests/controller_app_picker_wiring_tests.cpp)
+  target_compile_definitions(controller_app_picker_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME controller_app_picker_wiring_tests COMMAND controller_app_picker_wiring_tests)
   add_executable(ngx_failure_policy_tests tests/ngx_failure_policy_tests.cpp)
   target_link_libraries(ngx_failure_policy_tests PRIVATE udlss_common)
   add_test(NAME ngx_failure_policy_tests COMMAND ngx_failure_policy_tests)
@@ -154,6 +157,12 @@ if(UDLSS_BUILD_TESTS)
   add_executable(d3d12_guide_lifetime_wiring_tests tests/d3d12_guide_lifetime_wiring_tests.cpp)
   target_compile_definitions(d3d12_guide_lifetime_wiring_tests PRIVATE UDLSS_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME d3d12_guide_lifetime_wiring_tests COMMAND d3d12_guide_lifetime_wiring_tests)
+  add_executable(detach_lifecycle_wiring_tests tests/detach_lifecycle_wiring_tests.cpp)
+  target_compile_definitions(detach_lifecycle_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME detach_lifecycle_wiring_tests COMMAND detach_lifecycle_wiring_tests)
+  add_executable(detach_quiescence_tests tests/detach_quiescence_tests.cpp)
+  target_link_libraries(detach_quiescence_tests PRIVATE udlss_common)
+  add_test(NAME detach_quiescence_tests COMMAND detach_quiescence_tests)
   add_executable(performance_hotpath_policy_tests tests/performance_hotpath_policy_tests.cpp)
   target_link_libraries(performance_hotpath_policy_tests PRIVATE udlss_common)
   add_test(NAME performance_hotpath_policy_tests COMMAND performance_hotpath_policy_tests)
@@ -179,7 +188,7 @@ if(WIN32)
   target_link_libraries(UniversalDLSS5.Injector PRIVATE udlss_common advapi32)
 
   add_library(UniversalDLSS5.Bridge SHARED
-    src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp src/bridge/attach_logger.cpp
+    src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp src/bridge/hook_lifecycle.cpp src/bridge/attach_logger.cpp
     src/gpu/d3d11_pipeline.cpp src/gpu/d3d11_guide_extractor.cpp src/gpu/d3d11_resource_tracker.cpp src/gpu/d3d11_camera_tracker.cpp
     src/gpu/d3d12_resource_tracker.cpp src/gpu/game_temporal_guides.cpp src/gpu/d3d12_on12.cpp src/gpu/nv_optical_flow.cpp
     src/neural/passthrough.cpp src/neural/ingame_nr.cpp src/neural/nvidia_driver_win.cpp src/neural/ngx_nr.cpp src/neural/external_host.cpp src/neural/streamline_nr.cpp
@@ -295,6 +304,7 @@ if(WIN32)
   install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/NVIDIA_RUNTIME_SETUP.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/V0.3.1_HDR_HITMAN_COMPAT.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/V0.3.2_RELEASE.md"
     DESTINATION docs)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/UniversalDLSS5.png" DESTINATION resources)
 

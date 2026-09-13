@@ -101,7 +101,7 @@ public:
         preferences.featuresToLoad=features;
         preferences.numFeaturesToLoad=1;
         preferences.engine=sl::EngineType::eCustom;
-        preferences.engineVersion="UniversalDLSS5-0.3.1";
+        preferences.engineVersion="UniversalDLSS5-0.3.2";
         preferences.renderAPI=sl::RenderAPI::eD3D12;
         preferences.flags=sl::PreferenceFlags::eUseManualHooking |
                           sl::PreferenceFlags::eUseFrameBasedResourceTagging |

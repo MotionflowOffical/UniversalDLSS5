@@ -4,8 +4,8 @@
 IDI_APP_ICON ICON "UniversalDLSS5.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,3,1,0
- PRODUCTVERSION 0,3,1,0
+ FILEVERSION 0,3,2,0
+ PRODUCTVERSION 0,3,2,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "MotionflowOffical\0"
             VALUE "FileDescription", "Universal DLSS 5 Neural Rendering Controller\0"
-            VALUE "FileVersion", "0.3.1.0\0"
+            VALUE "FileVersion", "0.3.2.0\0"
             VALUE "InternalName", "UniversalDLSS5\0"
             VALUE "LegalCopyright", "Copyright 2026 MotionflowOffical\0"
             VALUE "OriginalFilename", "UniversalDLSS5.exe\0"
             VALUE "ProductName", "UniversalDLSS5\0"
-            VALUE "ProductVersion", "0.3.1.0\0"
+            VALUE "ProductVersion", "0.3.2.0\0"
         END
     END
     BLOCK "VarFileInfo"

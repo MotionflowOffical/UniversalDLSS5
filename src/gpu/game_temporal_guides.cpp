@@ -1,4 +1,5 @@
 #include "game_temporal_guides.hpp"
+#include "../bridge/hook_lifecycle.hpp"
 #include <MinHook.h>
 #include <windows.h>
 #include <algorithm>
@@ -117,19 +118,23 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation){
 }
 
 sl::Result hkSlSetTagForFrame(const sl::FrameToken& frame,const sl::ViewportHandle& viewport,const sl::ResourceTag* tags,uint32_t count,sl::CommandBuffer* cmd){
-    if(!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
     return g_origSlSetTagForFrame(frame,viewport,tags,count,cmd);
 }
 sl::Result hkSlSetTag(const sl::ViewportHandle& viewport,const sl::ResourceTag* tags,uint32_t count,sl::CommandBuffer* cmd){
-    if(!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
     return g_origSlSetTag(viewport,tags,count,cmd);
 }
 sl::Result hkSlSetConstants(const sl::Constants& values,const sl::FrameToken& frame,const sl::ViewportHandle& viewport){
-    if(!g_suppressed){std::scoped_lock lock(g_mutex);g_slConstants.sx=values.mvecScale.x;g_slConstants.sy=values.mvecScale.y;g_slConstants.depthKnown=values.depthInverted!=sl::Boolean::eInvalid;g_slConstants.depthInverted=values.depthInverted==sl::Boolean::eTrue;g_slConstants.reset=values.reset==sl::Boolean::eTrue;g_slConstants.tick=GetTickCount64();}
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed){std::scoped_lock lock(g_mutex);g_slConstants.sx=values.mvecScale.x;g_slConstants.sy=values.mvecScale.y;g_slConstants.depthKnown=values.depthInverted!=sl::Boolean::eInvalid;g_slConstants.depthInverted=values.depthInverted==sl::Boolean::eTrue;g_slConstants.reset=values.reset==sl::Boolean::eTrue;g_slConstants.tick=GetTickCount64();}
     return g_origSlSetConstants(values,frame,viewport);
 }
 sl::Result hkSlEvaluateFeature(sl::Feature feature,const sl::FrameToken& frame,const sl::BaseStructure** inputs,uint32_t count,sl::CommandBuffer* cmd){
-    if(!g_suppressed&&inputs){for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType)captureSlTag(*static_cast<const sl::ResourceTag*>(base),true);}}
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed&&inputs){for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType)captureSlTag(*static_cast<const sl::ResourceTag*>(base),true);}}
     return g_origSlEvaluateFeature(feature,frame,inputs,count,cmd);
 }
 #endif
@@ -161,8 +166,8 @@ void captureNgx11(const NVSDK_NGX_Parameter* p){
     int reset=0;if(p->Get(NVSDK_NGX_Parameter_Reset,&reset)==NVSDK_NGX_Result_Success)c.cameraCut=reset!=0;
     mergeCapture(std::move(c));
 }
-NVSDK_NGX_Result NVSDK_CONV hkNgx12Evaluate(ID3D12GraphicsCommandList* l,const NVSDK_NGX_Handle* h,const NVSDK_NGX_Parameter* p,PFN_NVSDK_NGX_ProgressCallback cb){captureNgx12(p);return g_origNgx12Evaluate(l,h,p,cb);}
-NVSDK_NGX_Result NVSDK_CONV hkNgx11Evaluate(ID3D11DeviceContext* c,const NVSDK_NGX_Handle* h,const NVSDK_NGX_Parameter* p,PFN_NVSDK_NGX_ProgressCallback cb){captureNgx11(p);return g_origNgx11Evaluate(c,h,p,cb);}
+NVSDK_NGX_Result NVSDK_CONV hkNgx12Evaluate(ID3D12GraphicsCommandList* l,const NVSDK_NGX_Handle* h,const NVSDK_NGX_Parameter* p,PFN_NVSDK_NGX_ProgressCallback cb){udlss::bridge::HookCallScope call;if(call.customWorkAllowed())captureNgx12(p);return g_origNgx12Evaluate(l,h,p,cb);}
+NVSDK_NGX_Result NVSDK_CONV hkNgx11Evaluate(ID3D11DeviceContext* c,const NVSDK_NGX_Handle* h,const NVSDK_NGX_Parameter* p,PFN_NVSDK_NGX_ProgressCallback cb){udlss::bridge::HookCallScope call;if(call.customWorkAllowed())captureNgx11(p);return g_origNgx11Evaluate(c,h,p,cb);}
 #endif
 
 bool createAndEnable(void* target,void* detour,void** original){

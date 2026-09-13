@@ -95,7 +95,7 @@ void initializeAttachLog(){
     g_path=base/name.str();
     wcsncpy_s(g_crashPath,g_path.c_str(),_TRUNCATE);
     std::ofstream out(g_path,std::ios::binary|std::ios::trunc);
-    if(out)out<<"UniversalDLSS5 v0.3.1 staged attach/crash log\r\nPID="<<GetCurrentProcessId()<<"\r\n";
+    if(out)out<<"UniversalDLSS5 v0.3.2 staged attach/crash log\r\nPID="<<GetCurrentProcessId()<<"\r\n";
     if(!g_veh)g_veh=AddVectoredExceptionHandler(0,crashVeh);
 }
 void logAttachStage(AttachLogStage stage,std::wstring_view detail){

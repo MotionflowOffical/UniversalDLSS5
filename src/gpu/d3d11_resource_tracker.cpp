@@ -1,5 +1,6 @@
 #include "d3d11_resource_tracker.hpp"
 #include "d3d11_camera_tracker.hpp"
+#include "../bridge/hook_lifecycle.hpp"
 #include "udlss/guide_candidate_policy.hpp"
 #include <MinHook.h>
 #include <d3dcompiler.h>
@@ -121,17 +122,17 @@ OMSetRenderTargetsFn origOM{}; PSSetShaderResourcesFn origPS{}; CSSetShaderResou
 PSSetShaderFn origPSShader{}; CSSetShaderFn origCSShader{}; CreatePixelShaderFn origCreatePS{}; CreateComputeShaderFn origCreateCS{};
 DrawFn origDraw{}; DrawIndexedFn origDrawIndexed{}; ClearRTVFn origClear{}; ClearDepthStencilViewFn origClearDepth{};
 
-void STDMETHODCALLTYPE hkOM(ID3D11DeviceContext* c,UINT n,ID3D11RenderTargetView* const* r,ID3D11DepthStencilView* d){ if(!g_suppressed) globalD3D11ResourceTracker().onRenderTargets(c,n,r,d); origOM(c,n,r,d); }
-void STDMETHODCALLTYPE hkPS(ID3D11DeviceContext* c,UINT s,UINT n,ID3D11ShaderResourceView* const* r){ if(!g_suppressed) globalD3D11ResourceTracker().onShaderResources(c,D3D11ResourceTracker::ShaderStage::Pixel,s,n,r); origPS(c,s,n,r); }
-void STDMETHODCALLTYPE hkCS(ID3D11DeviceContext* c,UINT s,UINT n,ID3D11ShaderResourceView* const* r){ if(!g_suppressed) globalD3D11ResourceTracker().onShaderResources(c,D3D11ResourceTracker::ShaderStage::Compute,s,n,r); origCS(c,s,n,r); }
-void STDMETHODCALLTYPE hkPSShader(ID3D11DeviceContext*c,ID3D11PixelShader*s,ID3D11ClassInstance* const*i,UINT n){if(!g_suppressed)globalD3D11ResourceTracker().onShaderBound(c,D3D11ResourceTracker::ShaderStage::Pixel,s);origPSShader(c,s,i,n);}
-void STDMETHODCALLTYPE hkCSShader(ID3D11DeviceContext*c,ID3D11ComputeShader*s,ID3D11ClassInstance* const*i,UINT n){if(!g_suppressed)globalD3D11ResourceTracker().onShaderBound(c,D3D11ResourceTracker::ShaderStage::Compute,s);origCSShader(c,s,i,n);}
-HRESULT STDMETHODCALLTYPE hkCreatePS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11PixelShader**out){const auto hr=origCreatePS(d,bc,n,l,out);if(SUCCEEDED(hr)&&out&&*out&&!g_suppressed)globalD3D11ResourceTracker().onShaderCreated(D3D11ResourceTracker::ShaderStage::Pixel,bc,n,*out);return hr;}
-HRESULT STDMETHODCALLTYPE hkCreateCS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11ComputeShader**out){const auto hr=origCreateCS(d,bc,n,l,out);if(SUCCEEDED(hr)&&out&&*out&&!g_suppressed)globalD3D11ResourceTracker().onShaderCreated(D3D11ResourceTracker::ShaderStage::Compute,bc,n,*out);return hr;}
-void STDMETHODCALLTYPE hkDraw(ID3D11DeviceContext* c,UINT a,UINT b){ if(!g_suppressed){ globalD3D11ResourceTracker().onDraw(c); globalD3D11CameraTracker().onDraw(c);} origDraw(c,a,b); }
-void STDMETHODCALLTYPE hkDrawIndexed(ID3D11DeviceContext* c,UINT a,UINT b,INT d){ if(!g_suppressed){ globalD3D11ResourceTracker().onDraw(c); globalD3D11CameraTracker().onDraw(c);} origDrawIndexed(c,a,b,d); }
-void STDMETHODCALLTYPE hkClear(ID3D11DeviceContext* c,ID3D11RenderTargetView* r,const FLOAT col[4]){ if(!g_suppressed) globalD3D11ResourceTracker().onClearRenderTarget(r); origClear(c,r,col); }
-void STDMETHODCALLTYPE hkClearDepth(ID3D11DeviceContext* c,ID3D11DepthStencilView* d,UINT flags,FLOAT depth,UINT8 stencil){ if(!g_suppressed) globalD3D11ResourceTracker().onClearDepthStencil(d,flags,depth); origClearDepth(c,d,flags,depth,stencil); }
+void STDMETHODCALLTYPE hkOM(ID3D11DeviceContext* c,UINT n,ID3D11RenderTargetView* const* r,ID3D11DepthStencilView* d){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed) globalD3D11ResourceTracker().onRenderTargets(c,n,r,d); origOM(c,n,r,d); }
+void STDMETHODCALLTYPE hkPS(ID3D11DeviceContext* c,UINT s,UINT n,ID3D11ShaderResourceView* const* r){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed) globalD3D11ResourceTracker().onShaderResources(c,D3D11ResourceTracker::ShaderStage::Pixel,s,n,r); origPS(c,s,n,r); }
+void STDMETHODCALLTYPE hkCS(ID3D11DeviceContext* c,UINT s,UINT n,ID3D11ShaderResourceView* const* r){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed) globalD3D11ResourceTracker().onShaderResources(c,D3D11ResourceTracker::ShaderStage::Compute,s,n,r); origCS(c,s,n,r); }
+void STDMETHODCALLTYPE hkPSShader(ID3D11DeviceContext*c,ID3D11PixelShader*s,ID3D11ClassInstance* const*i,UINT n){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed)globalD3D11ResourceTracker().onShaderBound(c,D3D11ResourceTracker::ShaderStage::Pixel,s);origPSShader(c,s,i,n);}
+void STDMETHODCALLTYPE hkCSShader(ID3D11DeviceContext*c,ID3D11ComputeShader*s,ID3D11ClassInstance* const*i,UINT n){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed)globalD3D11ResourceTracker().onShaderBound(c,D3D11ResourceTracker::ShaderStage::Compute,s);origCSShader(c,s,i,n);}
+HRESULT STDMETHODCALLTYPE hkCreatePS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11PixelShader**out){udlss::bridge::HookCallScope call;const auto hr=origCreatePS(d,bc,n,l,out);if(call.customWorkAllowed()&&SUCCEEDED(hr)&&out&&*out&&!g_suppressed)globalD3D11ResourceTracker().onShaderCreated(D3D11ResourceTracker::ShaderStage::Pixel,bc,n,*out);return hr;}
+HRESULT STDMETHODCALLTYPE hkCreateCS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11ComputeShader**out){udlss::bridge::HookCallScope call;const auto hr=origCreateCS(d,bc,n,l,out);if(call.customWorkAllowed()&&SUCCEEDED(hr)&&out&&*out&&!g_suppressed)globalD3D11ResourceTracker().onShaderCreated(D3D11ResourceTracker::ShaderStage::Compute,bc,n,*out);return hr;}
+void STDMETHODCALLTYPE hkDraw(ID3D11DeviceContext* c,UINT a,UINT b){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed){ globalD3D11ResourceTracker().onDraw(c); globalD3D11CameraTracker().onDraw(c);} origDraw(c,a,b); }
+void STDMETHODCALLTYPE hkDrawIndexed(ID3D11DeviceContext* c,UINT a,UINT b,INT d){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed){ globalD3D11ResourceTracker().onDraw(c); globalD3D11CameraTracker().onDraw(c);} origDrawIndexed(c,a,b,d); }
+void STDMETHODCALLTYPE hkClear(ID3D11DeviceContext* c,ID3D11RenderTargetView* r,const FLOAT col[4]){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed) globalD3D11ResourceTracker().onClearRenderTarget(r); origClear(c,r,col); }
+void STDMETHODCALLTYPE hkClearDepth(ID3D11DeviceContext* c,ID3D11DepthStencilView* d,UINT flags,FLOAT depth,UINT8 stencil){ udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!g_suppressed) globalD3D11ResourceTracker().onClearDepthStencil(d,flags,depth); origClearDepth(c,d,flags,depth,stencil); }
 
 bool hook(void* target,void* detour,void** original){
     const auto r=MH_CreateHook(target,detour,original);

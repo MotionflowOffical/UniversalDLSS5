@@ -35,5 +35,21 @@ int main() {
     assert(avast && avast->rootPid == 301 && avast->blocksThirdPartyModules);
 
     assert(findApplicationGroup(groups, L"C:\\Tools\\hidden.exe") == nullptr);
+
+    // App-list viewport policy: wheel scrolling is row-based, clamped, and
+    // selection changes keep the selected application visible.
+    assert(appPickerVisibleRows(240.0f, 48.0f) == 5);
+    assert(clampAppPickerScroll(0, 12, 5) == 0);
+    assert(clampAppPickerScroll(20, 12, 5) == 7);
+    assert(scrollAppPicker(0, -120, 12, 5) == 1);
+    assert(scrollAppPicker(3, 120, 12, 5) == 2);
+    assert(ensureAppPickerSelectionVisible(0, 7, 12, 5) == 3);
+    assert(ensureAppPickerSelectionVisible(5, 2, 12, 5) == 2);
+
+    // Refresh scans immediately but the UI keeps a short, deterministic
+    // feedback window so a fast enumeration still feels responsive.
+    static_assert(kAppPickerRefreshFeedbackMs == 450);
+    assert(appPickerRefreshFeedbackActive(1000, 1200));
+    assert(!appPickerRefreshFeedbackActive(1000, 1450));
     return 0;
 }

@@ -1,4 +1,4 @@
-UniversalDLSS5 v0.3.1 - D3D12 queue/backbuffer safety + real game guides
+UniversalDLSS5 v0.3.2 - performance, detach stability + controller UI
 =====================================================================
 This ZIP contains exactly one top-level folder: UniversalDLSS5\
 
@@ -10,12 +10,11 @@ To install over the previous source tree:
 
 The fixes are already integrated; no .patch file needs to be applied manually.
 
-This update keeps the working signed Feature-18 contract fix and adds:
-- proven D3D12 presentation-queue ownership for late-injected swapchains;
-- passthrough instead of guessing a recent DIRECT queue;
-- injector-owned D3D12 color staging so the game backbuffer is never directly wrapped by D3D11On12;
-- crash-stage telemetry for queue/copy/On12/neural/Present failures;
-- game-supplied NGX/Streamline motion/depth capture and D3D12/D3D11 guide fallbacks;
-- persistent global System / Light / Dark controller appearance;
-- synchronized/adaptive/asynchronous pacing and 1x-4x neural passes;
-- public version metadata updated consistently to v0.3.1.
+This update keeps the v0.3.1 HDR/D3D12 safety work and adds:
+- real Feature-18 GPU timestamp telemetry separated from synchronized wait time;
+- lower hot-path allocation, synchronization, optical-flow, guide-discovery, and queue-discovery overhead;
+- a D3D11 black-screen regression fix while retaining safe owned-resource optimizations;
+- quiescent detach/unload ordering that drains in-flight hooks before graphics/neural teardown;
+- independently scrollable application selection with a visible scrollbar;
+- brief Refresh feedback even when process enumeration completes immediately;
+- public/runtime/package version metadata updated consistently to v0.3.2.

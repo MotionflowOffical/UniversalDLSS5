@@ -1,4 +1,4 @@
-UniversalDLSS5 v0.3.1 NVIDIA runtime folder
+UniversalDLSS5 v0.3.2 NVIDIA runtime folder
 ===========================================
 
 This directory is intentionally shipped WITHOUT NVIDIA proprietary runtime DLLs.

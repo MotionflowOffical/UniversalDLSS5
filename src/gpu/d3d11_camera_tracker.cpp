@@ -1,4 +1,5 @@
 #include "d3d11_camera_tracker.hpp"
+#include "../bridge/hook_lifecycle.hpp"
 #include "d3d11_resource_tracker.hpp"
 #include <MinHook.h>
 #include <d3dcompiler.h>
@@ -42,12 +43,12 @@ using MapFn=HRESULT (STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UI
 using UnmapFn=void (STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT);
 CreateVSFn origCreateVS{};VSSetShaderFn origVS{};VSSetCBFn origCB{};UpdateFn origUpdate{};MapFn origMap{};UnmapFn origUnmap{};
 
-HRESULT STDMETHODCALLTYPE hkCreateVS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11VertexShader**out){auto hr=origCreateVS(d,bc,n,l,out);if(SUCCEEDED(hr)&&out&&*out&&!d3d11TrackingSuppressed())globalD3D11CameraTracker().onVertexShaderCreated(bc,n,*out);return hr;}
-void STDMETHODCALLTYPE hkVS(ID3D11DeviceContext*c,ID3D11VertexShader*s,ID3D11ClassInstance* const*i,UINT n){if(!d3d11TrackingSuppressed())globalD3D11CameraTracker().onVertexShaderBound(c,s);origVS(c,s,i,n);}
-void STDMETHODCALLTYPE hkCB(ID3D11DeviceContext*c,UINT start,UINT n,ID3D11Buffer* const*b){if(!d3d11TrackingSuppressed())globalD3D11CameraTracker().onConstantBuffersBound(c,start,n,b);origCB(c,start,n,b);}
-void STDMETHODCALLTYPE hkUpdate(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub,const D3D11_BOX*box,const void*data,UINT row,UINT depth){if(!d3d11TrackingSuppressed()&&sub==0&&!box&&data)globalD3D11CameraTracker().onUpdateResource(r,data);origUpdate(c,r,sub,box,data,row,depth);}
-HRESULT STDMETHODCALLTYPE hkMap(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub,D3D11_MAP type,UINT flags,D3D11_MAPPED_SUBRESOURCE*m){auto hr=origMap(c,r,sub,type,flags,m);if(SUCCEEDED(hr)&&!d3d11TrackingSuppressed()&&sub==0&&m&&m->pData)globalD3D11CameraTracker().onMap(r,m->pData);return hr;}
-void STDMETHODCALLTYPE hkUnmap(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub){if(!d3d11TrackingSuppressed()&&sub==0)globalD3D11CameraTracker().onUnmap(r);origUnmap(c,r,sub);}
+HRESULT STDMETHODCALLTYPE hkCreateVS(ID3D11Device*d,const void*bc,SIZE_T n,ID3D11ClassLinkage*l,ID3D11VertexShader**out){udlss::bridge::HookCallScope call;auto hr=origCreateVS(d,bc,n,l,out);if(call.customWorkAllowed()&&SUCCEEDED(hr)&&out&&*out&&!d3d11TrackingSuppressed())globalD3D11CameraTracker().onVertexShaderCreated(bc,n,*out);return hr;}
+void STDMETHODCALLTYPE hkVS(ID3D11DeviceContext*c,ID3D11VertexShader*s,ID3D11ClassInstance* const*i,UINT n){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!d3d11TrackingSuppressed())globalD3D11CameraTracker().onVertexShaderBound(c,s);origVS(c,s,i,n);}
+void STDMETHODCALLTYPE hkCB(ID3D11DeviceContext*c,UINT start,UINT n,ID3D11Buffer* const*b){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!d3d11TrackingSuppressed())globalD3D11CameraTracker().onConstantBuffersBound(c,start,n,b);origCB(c,start,n,b);}
+void STDMETHODCALLTYPE hkUpdate(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub,const D3D11_BOX*box,const void*data,UINT row,UINT depth){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!d3d11TrackingSuppressed()&&sub==0&&!box&&data)globalD3D11CameraTracker().onUpdateResource(r,data);origUpdate(c,r,sub,box,data,row,depth);}
+HRESULT STDMETHODCALLTYPE hkMap(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub,D3D11_MAP type,UINT flags,D3D11_MAPPED_SUBRESOURCE*m){udlss::bridge::HookCallScope call;auto hr=origMap(c,r,sub,type,flags,m);if(call.customWorkAllowed()&&SUCCEEDED(hr)&&!d3d11TrackingSuppressed()&&sub==0&&m&&m->pData)globalD3D11CameraTracker().onMap(r,m->pData);return hr;}
+void STDMETHODCALLTYPE hkUnmap(ID3D11DeviceContext*c,ID3D11Resource*r,UINT sub){udlss::bridge::HookCallScope call;if(call.customWorkAllowed()&&!d3d11TrackingSuppressed()&&sub==0)globalD3D11CameraTracker().onUnmap(r);origUnmap(c,r,sub);}
 bool hook(void*target,void*detour,void**original){auto r=MH_CreateHook(target,detour,original);return r==MH_OK||r==MH_ERROR_ALREADY_CREATED;}
 }
 

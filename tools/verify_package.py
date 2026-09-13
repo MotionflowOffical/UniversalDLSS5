@@ -151,8 +151,8 @@ for token in ['D3DReflect', 'classifyMatrixBindingName', 'previousViewProjection
         fail(f'v0.2.8 camera constant tracker missing: {token}')
 if 'prevPixel-currentPixel' not in camera_shader.replace(' ', ''):
     fail('v0.2.8 camera motion shader does not emit current->previous pixel vectors')
-if 'project(UniversalDLSS5 VERSION 0.3.1' not in cmake_root:
-    fail('CMake project version is not v0.3.1')
+if 'project(UniversalDLSS5 VERSION 0.3.2' not in cmake_root:
+    fail('CMake project version is not v0.3.2')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
@@ -303,7 +303,7 @@ for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'C
         fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
 if 'CreateWrappedResource(bb.Get()' in on12:
     fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
-for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.3.1']:
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.3.2']:
     if token not in attach_logger:
         fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 
