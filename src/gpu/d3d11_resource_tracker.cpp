@@ -1,5 +1,6 @@
 #include "d3d11_resource_tracker.hpp"
 #include "d3d11_camera_tracker.hpp"
+#include "udlss/guide_candidate_policy.hpp"
 #include <MinHook.h>
 #include <d3dcompiler.h>
 #include <d3d11shader.h>
@@ -31,6 +32,7 @@ struct Entry {
     float frameClearDepth{1.0f};
     float clearDepth{1.0f};
     bool clearKnown{};
+    std::uint32_t consecutiveFrames{};
 };
 struct MotionBinding { UINT slot{}; NativeMotionEncoding encoding{NativeMotionEncoding::Unknown}; };
 struct ShaderInfo { std::vector<MotionBinding> motionSrvSlots; };
@@ -198,10 +200,36 @@ void D3D11ResourceTracker::onClearDepthStencil(ID3D11DepthStencilView* dsv,UINT 
     e->depthBound=true; e->depthViewFormat=vd.Format; ++e->frameDepthClears; e->frameClearDepth=clearDepth; e->lastSeenFrame=g.frame;
 }
 void D3D11ResourceTracker::finalizeFrame(ID3D11Device* device,UINT,UINT){
-    std::scoped_lock l(g.mutex);for(auto&[_,e]:g.entries){if(!sameDevice(e.device.Get(),device))continue;if(e.lastSeenFrame==g.frame){e.meta.renderTargetWrites=e.frameWrites;e.meta.shaderResourceBinds=e.frameSamples;e.meta.sampledAfterWrite=e.frameSampledAfterWrite;++e.meta.framesObserved;e.depthDraws=e.frameDepthDraws;if(e.frameDepthClears){e.clearDepth=e.frameClearDepth;e.clearKnown=true;}}e.frameWrites=e.frameSamples=e.frameSampledAfterWrite=0;e.frameDepthDraws=0;e.frameDepthClears=0;}++g.frame;g.currentRtvs.clear();g.currentDsv.Reset();
+    std::scoped_lock l(g.mutex);
+    for(auto&[_,e]:g.entries){
+        if(!sameDevice(e.device.Get(),device)) continue;
+        if(e.lastSeenFrame==g.frame){
+            e.meta.renderTargetWrites=e.frameWrites;
+            e.meta.shaderResourceBinds=e.frameSamples;
+            e.meta.sampledAfterWrite=e.frameSampledAfterWrite;
+            ++e.meta.framesObserved;
+            ++e.consecutiveFrames;
+            e.depthDraws=e.frameDepthDraws;
+            if(e.frameDepthClears){e.clearDepth=e.frameClearDepth;e.clearKnown=true;}
+        } else if(e.lastSeenFrame+1<g.frame) {
+            e.consecutiveFrames=0;
+        }
+        e.frameWrites=e.frameSamples=e.frameSampledAfterWrite=0;
+        e.frameDepthDraws=0;e.frameDepthClears=0;
+    }
+    ++g.frame;g.currentRtvs.clear();g.currentDsv.Reset();
 }
 NativeMotionCandidate D3D11ResourceTracker::bestMotionCandidate(ID3D11Device* device,UINT width,UINT height) const{
-    std::scoped_lock l(g.mutex);NativeMotionCandidate best{};for(const auto&[_,e]:g.entries){if(!sameDevice(e.device.Get(),device))continue;const auto score=scoreNativeMotionCandidate(e.meta,width,height);if(score>best.score){best.texture=e.texture;best.meta=e.meta;best.stableId=e.id;best.score=score;}}if(!nativeMotionCandidateAutoUsable(best.meta,width,height))best.texture.Reset();return best;
+    std::scoped_lock l(g.mutex);NativeMotionCandidate best{};
+    std::uint32_t bestConsecutive=0;
+    for(const auto&[_,e]:g.entries){
+        if(!sameDevice(e.device.Get(),device))continue;
+        const bool writeRead=e.meta.sampledAfterWrite>0;
+        const auto score=scoreTemporalMotionCandidate(e.meta,width,height,writeRead,e.consecutiveFrames);
+        if(score>best.score){best.texture=e.texture;best.meta=e.meta;best.stableId=e.id;best.score=score;bestConsecutive=e.consecutiveFrames;}
+    }
+    if(!temporalMotionAutoUsable(best.meta,width,height,best.meta.sampledAfterWrite>0,bestConsecutive))best.texture.Reset();
+    return best;
 }
 TrackedDepthCandidate D3D11ResourceTracker::bestDepthCandidate(ID3D11Device* device,UINT width,UINT height) const{
     std::scoped_lock l(g.mutex); TrackedDepthCandidate best{};
@@ -209,8 +237,11 @@ TrackedDepthCandidate D3D11ResourceTracker::bestDepthCandidate(ID3D11Device* dev
         if(!sameDevice(e.device.Get(),device)||!e.depthBound||e.depthDraws==0)continue;
         D3D11_TEXTURE2D_DESC d{};e.texture->GetDesc(&d);
         const bool formatOk=e.depthViewFormat==DXGI_FORMAT_D32_FLOAT||e.depthViewFormat==DXGI_FORMAT_D24_UNORM_S8_UINT||e.depthViewFormat==DXGI_FORMAT_D16_UNORM;
-        if(!formatOk||d.Width!=width||d.Height!=height||d.SampleDesc.Count!=1)continue;
-        const std::uint32_t score=10000u+std::min<std::uint32_t>(5000,e.depthDraws*4u)+(e.clearKnown?250u:0u);
+        DepthCandidateMeta meta{d.Width,d.Height,d.SampleDesc.Count,formatOk,true};
+        const bool transitioned=e.meta.sampledAfterWrite>0;
+        const int base=scoreTemporalDepthCandidate(meta,width,height,transitioned,e.consecutiveFrames);
+        if(base<0)continue;
+        const auto score=static_cast<std::uint32_t>(base)+std::min<std::uint32_t>(1800,e.depthDraws*3u)+(e.clearKnown?250u:0u);
         if(score>best.score){best.texture=e.texture;best.viewFormat=e.depthViewFormat;best.clearDepth=e.clearDepth;best.clearKnown=e.clearKnown;best.drawUses=e.depthDraws;best.stableId=e.id;best.score=score;}
     }
     return best;

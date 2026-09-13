@@ -9,15 +9,15 @@ REQUIRED = [
     'include/udlss/settings.hpp', 'include/udlss/shared_control.hpp', 'include/udlss/guide_quality_policy.hpp', 'include/udlss/resource_extraction_policy.hpp', 'include/udlss/game_guides_api.hpp',
     'include/udlss/native_motion_policy.hpp', 'include/udlss/camera_matrix_policy.hpp', 'include/udlss/camera_motion_math.hpp', 'include/udlss/motion_route_policy.hpp',
     'include/udlss/runtime_policy.hpp', 'include/udlss/runtime_import_policy.hpp', 'include/udlss/injection_policy.hpp', 'include/udlss/neural_scheduler_policy.hpp', 'include/udlss/renderer_selection_policy.hpp',
-    'include/udlss/runtime_diagnostics.hpp', 'include/udlss/d3d12_backbuffer_policy.hpp', 'include/udlss/backend_policy.hpp', 'include/udlss/external_host_policy.hpp',
-    'src/controller/ui.cpp', 'src/controller/runtime_importer.cpp', 'src/controller/runtime_importer.hpp', 'src/controller/resource.h', 'src/bridge/dxgi_hooks.cpp',
-    'src/gpu/d3d11_pipeline.cpp', 'src/gpu/d3d11_guide_extractor.cpp', 'src/gpu/d3d11_resource_tracker.cpp', 'src/gpu/d3d11_resource_tracker.hpp', 'src/gpu/d3d11_camera_tracker.cpp', 'src/gpu/d3d11_camera_tracker.hpp', 'src/gpu/d3d12_on12.cpp', 'src/gpu/nv_optical_flow.cpp',
+    'include/udlss/runtime_diagnostics.hpp', 'include/udlss/d3d12_backbuffer_policy.hpp', 'include/udlss/backend_policy.hpp', 'include/udlss/external_host_policy.hpp', 'include/udlss/controller_preferences.hpp', 'include/udlss/safe_attach_policy.hpp', 'include/udlss/guide_candidate_policy.hpp', 'include/udlss/game_guide_policy.hpp',
+    'src/controller/ui.cpp', 'src/controller/runtime_importer.cpp', 'src/controller/runtime_importer.hpp', 'src/controller/resource.h', 'src/bridge/dxgi_hooks.cpp', 'src/bridge/attach_logger.cpp', 'src/bridge/attach_logger.hpp',
+    'src/gpu/d3d11_pipeline.cpp', 'src/gpu/d3d11_guide_extractor.cpp', 'src/gpu/d3d11_resource_tracker.cpp', 'src/gpu/d3d11_resource_tracker.hpp', 'src/gpu/d3d11_camera_tracker.cpp', 'src/gpu/d3d11_camera_tracker.hpp', 'src/gpu/d3d12_on12.cpp', 'src/gpu/d3d12_resource_tracker.cpp', 'src/gpu/d3d12_resource_tracker.hpp', 'src/gpu/game_temporal_guides.cpp', 'src/gpu/game_temporal_guides.hpp', 'src/gpu/nv_optical_flow.cpp',
     'src/neural/ingame_nr.cpp', 'src/neural/ngx_nr.cpp', 'src/neural/external_host.cpp', 'src/neural/external_host_protocol.hpp', 'src/neural/streamline_nr.cpp', 'src/neural/passthrough.cpp', 'src/host/main.cpp', 'src/host/nr_forwarder.cpp',
     'shaders/convert.hlsl', 'shaders/downsample.hlsl', 'shaders/flow.hlsl',
     'shaders/motion.hlsl', 'shaders/native_motion_convert.hlsl', 'shaders/camera_motion.hlsl', 'shaders/mask.hlsl', 'shaders/depth_convert.hlsl', 'shaders/post.hlsl', 'shaders/blit.hlsl',
-    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md',
+    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md', 'docs/GAME_GUIDES_SAFE_ATTACH.md',
     'tests/guide_quality_policy_tests.cpp', 'tests/ingame_nr_policy_tests.cpp', 'tests/ingame_nr_parameters_tests.cpp', 'tests/streamline_mount_policy_tests.cpp', 'tests/motion_route_policy_tests.cpp', 'tests/camera_motion_math_tests.cpp', 'tests/d3d11_direct_mount_motion_tests.cpp', 'tests/d3d11_depth_tracking_tests.cpp', 'tests/camera_matrix_policy_tests.cpp', 'tests/native_motion_policy_tests.cpp', 'tests/resource_tracker_semantic_tests.cpp', 'tests/resource_extraction_policy_tests.cpp', 'tests/runtime_diagnostics_tests.cpp', 'tests/d3d12_backbuffer_policy_tests.cpp', 'tests/backend_policy_tests.cpp',
-    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp', 'tests/runtime_import_policy_tests.cpp', 'tests/release_packaging_tests.cpp',
+    'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp', 'tests/runtime_import_policy_tests.cpp', 'tests/release_packaging_tests.cpp', 'tests/controller_preferences_tests.cpp', 'tests/safe_attach_policy_tests.cpp', 'tests/guide_candidate_policy_tests.cpp', 'tests/game_guide_policy_tests.cpp', 'tests/v029_architecture_wiring_tests.cpp',
     'include/udlss/app_picker_policy.hpp', 'include/udlss/ngx_failure_policy.hpp', 'include/udlss/neural_route_policy.hpp',
     'examples/GameGuidesAdapter/README.md', 'examples/GameGuidesAdapter/template.cpp',
 ]
@@ -151,15 +151,15 @@ for token in ['D3DReflect', 'classifyMatrixBindingName', 'previousViewProjection
         fail(f'v0.2.8 camera constant tracker missing: {token}')
 if 'prevPixel-currentPixel' not in camera_shader.replace(' ', ''):
     fail('v0.2.8 camera motion shader does not emit current->previous pixel vectors')
-if 'project(UniversalDLSS5 VERSION 0.2.8' not in cmake_root:
-    fail('CMake project version is not v0.2.8')
+if 'project(UniversalDLSS5 VERSION 0.3.1' not in cmake_root:
+    fail('CMake project version is not v0.3.1')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 17' not in shared:
-    fail('synchronized-pacing diagnostics layout must use control ABI 17')
+if 'kControlAbi = 18' not in shared:
+    fail('game-guide diagnostics layout must use control ABI 18')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')
@@ -219,10 +219,69 @@ extractor = (ROOT / 'src/gpu/d3d11_guide_extractor.cpp').read_text(encoding='utf
 for token in ['OMGetRenderTargets', 'UniversalDLSS5.GameGuides.dll', 'GameGuide_MotionPixelCurrentToPrevious', 'GameGuide_ControlMaskIsNrApplication']:
     if token not in extractor:
         fail(f'v0.2.8 conservative game-guide extraction missing: {token}')
-for token in ['gameDepthActive', 'controlMaskActive', 'temporalResetThisFrame', 'guideFields', 'nativeMotionCandidateId', 'nativeMotionCandidateScore', 'cameraCurrentValid', 'cameraPreviousValid', 'cameraConfidence', 'temporalReason']:
+for token in ['gameDepthActive', 'controlMaskActive', 'temporalResetThisFrame', 'guideFields', 'nativeMotionCandidateId', 'nativeMotionCandidateScore', 'guideMotionWidth', 'guideMotionHeight', 'guideMotionConfidence', 'guideDepthWidth', 'guideDepthHeight', 'guideDepthConfidence', 'cameraCurrentValid', 'cameraPreviousValid', 'cameraConfidence', 'temporalReason']:
     if token not in shared:
         fail(f'v0.2.8 guide diagnostic field missing: {token}')
 
+
+# v0.3-era real-guide capture, safe attach, and controller preference invariants.
+controller_prefs = (ROOT / 'include/udlss/controller_preferences.hpp').read_text(encoding='utf-8')
+safe_attach = (ROOT / 'include/udlss/safe_attach_policy.hpp').read_text(encoding='utf-8')
+bridge_hooks = (ROOT / 'src/bridge/dxgi_hooks.cpp').read_text(encoding='utf-8')
+attach_logger = (ROOT / 'src/bridge/attach_logger.cpp').read_text(encoding='utf-8')
+game_guides = (ROOT / 'src/gpu/game_temporal_guides.cpp').read_text(encoding='utf-8')
+d3d12_tracker = (ROOT / 'src/gpu/d3d12_resource_tracker.cpp').read_text(encoding='utf-8')
+on12 = (ROOT / 'src/gpu/d3d12_on12.cpp').read_text(encoding='utf-8')
+for token in ['uiTheme=', 'decodeControllerPreferences', 'ControllerPreferences']:
+    if token not in controller_prefs:
+        fail(f'global controller-theme persistence missing: {token}')
+for token in ['stablePresents>=8', 'elapsed>=350', 'queueCaptured']:
+    if token not in safe_attach.replace(' ', ''):
+        fail(f'D3D12 safe-attach policy missing: {token}')
+for token in ['lastGuideHookProbeFrame', 'probeGameGuideHooks', 'installGameTemporalGuideHooks',
+              'installD3D12ResourceTrackingHooks', 'safeAttachReady']:
+    if token not in bridge_hooks:
+        fail(f'lazy guide/safe-attach bridge wiring missing: {token}')
+for token in ['attach-', 'SafeAttachStable', 'D3D12QueueCaptured', 'NeuralProcessingStarted']:
+    if token not in attach_logger:
+        fail(f'staged attach logging missing: {token}')
+for token in ['slSetTagForFrame', 'slSetConstants', 'NVSDK_NGX_Parameter_MotionVectors',
+              'NVSDK_NGX_Parameter_Depth', 'nativeFormat', 'constantsFresh',
+              'gameGuideCaptureSuppressed']:
+    if token not in game_guides:
+        fail(f'game-supplied temporal guide capture missing: {token}')
+for token in ['ResourceBarrier', 'scoreTemporalMotionCandidate', 'scoreTemporalDepthCandidate',
+              'bestMotionCandidate', 'bestDepthCandidate']:
+    if token not in d3d12_tracker:
+        fail(f'D3D12 temporal resource tracking missing: {token}')
+for token in ['snapshotGameTemporalGuides', 'bestMotionCandidate', 'nativeMotionCandidateId',
+              'D3D12 temporal resource tracker']:
+    if token not in on12:
+        fail(f'D3D12On12 game-guide bridge/diagnostics missing: {token}')
+for token in ['controllerPreferencesPath', 'saveControllerPreferences', 'BTN_OPEN_LOGS',
+              'openLogsDirectory', 'Game motion guide:', 'Game depth guide:']:
+    if token not in ui:
+        fail(f'controller guide/theme diagnostics missing: {token}')
+
+
+# v0.3.1 D3D12 queue/backbuffer safety invariants.
+present_queue = (ROOT / 'include/udlss/present_queue_policy.hpp').read_text(encoding='utf-8')
+for token in ['PresentQueueProofState', 'observePresentQueueEvidence', 'presentQueueTrusted']:
+    if token not in present_queue:
+        fail(f'v0.3.1 present-queue proof policy missing: {token}')
+for token in ['registerSwapchainBackbuffers', 'takeD3D12CommandListTouches', 'presentQueueTrusted', 'provenQueue']:
+    if token not in bridge_hooks:
+        fail(f'v0.3.1 proven D3D12 presentation queue wiring missing: {token}')
+if 'recentQueue' in bridge_hooks:
+    fail('v0.3.1 must not initialize D3D11On12 from the most-recent same-device DIRECT queue')
+for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'CrashStage::PostCopy']:
+    if token not in on12:
+        fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
+if 'CreateWrappedResource(bb.Get()' in on12:
+    fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.3.1']:
+    if token not in attach_logger:
+        fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 
 # Release/runtime-import wiring: proprietary NVIDIA files are imported after install, never packaged.
 release_cmake = (ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')

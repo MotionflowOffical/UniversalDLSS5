@@ -8,6 +8,7 @@
 #include <vector>
 #include <algorithm>
 #include <filesystem>
+#include "../gpu/game_temporal_guides.hpp"
 
 #ifdef UDLSS_WITH_STREAMLINE
 #include <sl.h>
@@ -100,7 +101,7 @@ public:
         preferences.featuresToLoad=features;
         preferences.numFeaturesToLoad=1;
         preferences.engine=sl::EngineType::eCustom;
-        preferences.engineVersion="UniversalDLSS5-0.2.8";
+        preferences.engineVersion="UniversalDLSS5-0.3.1";
         preferences.renderAPI=sl::RenderAPI::eD3D12;
         preferences.flags=sl::PreferenceFlags::eUseManualHooking |
                           sl::PreferenceFlags::eUseFrameBasedResourceTagging |
@@ -167,6 +168,7 @@ public:
     }
 
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& status) override {
+        gpu::GameGuideCaptureGuard captureGuard;
         status.neuralApi=NeuralExecutionApi::D3D12;
         status.neuralLocation=NeuralExecutionLocation::InGame;
         status.neuralBackendKind=NeuralBackendKind::Streamline1004;

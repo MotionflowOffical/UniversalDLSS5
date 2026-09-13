@@ -35,7 +35,10 @@ template<class T> bool makeSrv(ID3D11Device*d,ID3D11Texture2D*t,ComPtr<T>&o){ret
 template<class T> bool makeUav(ID3D11Device*d,ID3D11Texture2D*t,ComPtr<T>&o){return SUCCEEDED(d->CreateUnorderedAccessView(t,nullptr,&o));}
 struct NativeMotionParams {
     std::uint32_t width{},height{},encoding{},invertY{};
-    float motionScale{1.0f}; float pad[3]{};
+    float motionScale{1.0f};
+    float inputToPixelScaleX{1.0f};
+    float inputToPixelScaleY{1.0f};
+    float pad{};
 };
 struct CameraMotionParams {
     float currentClipToPreviousClip[16]{};
@@ -235,17 +238,31 @@ bool D3D11Pipeline::blit(ID3D11Texture2D*bb,RuntimeStatus&st){
     return drawSrv(postSrv_.Get(),rtv.Get(),width_,height_);
 }
 
-bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st){
+bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st,const GuideProbeResult* externalGuide){
     if(!bb||!settings.enabled)return false;
     Settings effective=settings;const auto flowTuning=effectiveFlowTuning(settings);effective.flowDownsample=flowTuning.downsample;effective.flowSearchRadius=flowTuning.searchRadius;
     D3D11_TEXTURE2D_DESC desc{};bb->GetDesc(&desc);
 
     // Probe and snapshot while the game's own D3D11 state is still current.
     GuideProbeResult guide{};guideExtractor_.probe(bb,settings,guide,st);
+    if(externalGuide){
+        const auto externalPriority=guideSourcePriority(externalGuide->source);
+        const auto localPriority=guideSourcePriority(guide.source);
+        if(externalGuide->depth && (!guide.depth || externalPriority>=localPriority)){guide.depth=externalGuide->depth;guide.depthViewFormat=externalGuide->depthViewFormat;guide.depthInverted=externalGuide->depthInverted;guide.depthConventionKnown=externalGuide->depthConventionKnown;guide.depthWidth=externalGuide->depthWidth;guide.depthHeight=externalGuide->depthHeight;guide.depthConfidence=externalGuide->depthConfidence;}
+        if(externalGuide->motion && externalGuide->motionConventionValid && (!guide.motion || externalPriority>=localPriority)){guide.motion=externalGuide->motion;guide.motionConventionValid=true;guide.motionEncoding=externalGuide->motionEncoding;guide.motionScaleX=externalGuide->motionScaleX;guide.motionScaleY=externalGuide->motionScaleY;guide.motionWidth=externalGuide->motionWidth;guide.motionHeight=externalGuide->motionHeight;guide.motionConfidence=externalGuide->motionConfidence;}
+        if(externalGuide->cameraCut)guide.cameraCut=true;
+        if((guide.depth||guide.motion)&&externalPriority>=localPriority){guide.source=externalGuide->source;guide.provider=externalGuide->provider;wcsncpy_s(st.guideAdapterName,guide.provider.c_str(),_TRUNCATE);std::wstring fields;if(guide.motion)fields=L"game motion";if(guide.depth){if(!fields.empty())fields+=L", ";fields+=L"game depth";}wcsncpy_s(st.guideFields,fields.c_str(),_TRUNCATE);if(guide.depth)wcsncpy_s(st.depthName,guide.provider.c_str(),_TRUNCATE);}
+    }
     const auto trackedMotion=globalD3D11ResourceTracker().bestMotionCandidate(device_.Get(),desc.Width,desc.Height);
     const auto camera=globalD3D11CameraTracker().snapshot(device_.Get());
     st.nativeMotionCandidateId=trackedMotion.stableId;
     st.nativeMotionCandidateScore=trackedMotion.score;
+    st.guideMotionWidth=guide.motion?guide.motionWidth:0u;
+    st.guideMotionHeight=guide.motion?guide.motionHeight:0u;
+    st.guideMotionConfidence=guide.motion?guide.motionConfidence:0u;
+    st.guideDepthWidth=guide.depth?guide.depthWidth:0u;
+    st.guideDepthHeight=guide.depth?guide.depthHeight:0u;
+    st.guideDepthConfidence=guide.depth?guide.depthConfidence:0u;
     st.cameraCurrentValid=camera.currentValid?1u:0u;
     st.cameraPreviousValid=camera.previousValid?1u:0u;
     st.cameraConfidence=camera.confidence;
@@ -313,11 +330,12 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     float frameScaleX=settings.motionScaleX,frameScaleY=settings.motionScaleY;
 
     if(route==MotionRoute::AdapterNative){
-        if(!guideExtractor_.copyMotion(guide,motionTex_.Get(),width_,height_))route=MotionRoute::CameraDepth;
+        ComPtr<ID3D11ShaderResourceView> nativeSrv;
+        if(!guide.motion||!guide.motionConventionValid||FAILED(device_->CreateShaderResourceView(guide.motion.Get(),nullptr,&nativeSrv))){route=cameraDepthReady?MotionRoute::CameraDepth:fallbackMotionRoute(settings.motionSource,nvofAvailable);}
         else{
-            trustedMotion=true;
-            frameScaleX=settings.motionScale*settings.motionScaleX*guide.motionScaleX;
-            frameScaleY=settings.motionScale*(settings.invertMotionY?-1.0f:1.0f)*settings.motionScaleY*guide.motionScaleY;
+            NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)guide.motionEncoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;np.inputToPixelScaleX=guide.motionScaleX;np.inputToPixelScaleY=guide.motionScaleY;
+            ok&=uploadBuffer(nativeMotionCb_.Get(),&np,sizeof(np));ID3D11ShaderResourceView*s[]={nativeSrv.Get()};ok&=runComputeWithConstants(nativeMotionConvert_.Get(),s,1,motionUav_.Get(),width_,height_,nativeMotionCb_.Get());
+            trustedMotion=true;frameScaleX=settings.motionScaleX;frameScaleY=settings.motionScaleY;
             const float reliable[4]={0,0,1,0};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),reliable);
         }
     }
@@ -326,7 +344,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         ComPtr<ID3D11ShaderResourceView> nativeSrv;
         if(!trackedMotion.texture||FAILED(device_->CreateShaderResourceView(trackedMotion.texture.Get(),nullptr,&nativeSrv))){route=cameraDepthReady?MotionRoute::CameraDepth:fallbackMotionRoute(settings.motionSource,nvofAvailable);}
         else{
-            NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)trackedMotion.meta.encoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;
+            NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)trackedMotion.meta.encoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;np.inputToPixelScaleX=1.0f;np.inputToPixelScaleY=1.0f;
             ok&=uploadBuffer(nativeMotionCb_.Get(),&np,sizeof(np));ID3D11ShaderResourceView*s[]={nativeSrv.Get()};ok&=runComputeWithConstants(nativeMotionConvert_.Get(),s,1,motionUav_.Get(),width_,height_,nativeMotionCb_.Get());
             trustedMotion=true;const float reliable[4]={0,0,1,0};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),reliable);
         }

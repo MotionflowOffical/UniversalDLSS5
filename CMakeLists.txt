@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(UniversalDLSS5 VERSION 0.2.8 LANGUAGES C CXX)
+project(UniversalDLSS5 VERSION 0.3.1 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -118,9 +118,30 @@ if(UDLSS_BUILD_TESTS)
   add_executable(release_packaging_tests tests/release_packaging_tests.cpp)
   target_compile_definitions(release_packaging_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME release_packaging_tests COMMAND release_packaging_tests)
+  add_executable(controller_preferences_tests tests/controller_preferences_tests.cpp)
+  target_link_libraries(controller_preferences_tests PRIVATE udlss_common)
+  add_test(NAME controller_preferences_tests COMMAND controller_preferences_tests)
+  add_executable(guide_candidate_policy_tests tests/guide_candidate_policy_tests.cpp)
+  target_link_libraries(guide_candidate_policy_tests PRIVATE udlss_common)
+  add_test(NAME guide_candidate_policy_tests COMMAND guide_candidate_policy_tests)
+  add_executable(safe_attach_policy_tests tests/safe_attach_policy_tests.cpp)
+  target_link_libraries(safe_attach_policy_tests PRIVATE udlss_common)
+  add_test(NAME safe_attach_policy_tests COMMAND safe_attach_policy_tests)
+  add_executable(game_guide_policy_tests tests/game_guide_policy_tests.cpp)
+  target_link_libraries(game_guide_policy_tests PRIVATE udlss_common)
+  add_test(NAME game_guide_policy_tests COMMAND game_guide_policy_tests)
   add_executable(v029_architecture_wiring_tests tests/v029_architecture_wiring_tests.cpp)
   target_compile_definitions(v029_architecture_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME v029_architecture_wiring_tests COMMAND v029_architecture_wiring_tests)
+  add_executable(present_queue_policy_tests tests/present_queue_policy_tests.cpp)
+  target_link_libraries(present_queue_policy_tests PRIVATE udlss_common)
+  add_test(NAME present_queue_policy_tests COMMAND present_queue_policy_tests)
+  add_executable(v031_architecture_wiring_tests tests/v031_architecture_wiring_tests.cpp)
+  target_compile_definitions(v031_architecture_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME v031_architecture_wiring_tests COMMAND v031_architecture_wiring_tests)
+  add_executable(injection_lifecycle_wiring_tests tests/injection_lifecycle_wiring_tests.cpp)
+  target_compile_definitions(injection_lifecycle_wiring_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME injection_lifecycle_wiring_tests COMMAND injection_lifecycle_wiring_tests)
 endif()
 
 if(WIN32)
@@ -140,8 +161,9 @@ if(WIN32)
   target_link_libraries(UniversalDLSS5.Injector PRIVATE udlss_common advapi32)
 
   add_library(UniversalDLSS5.Bridge SHARED
-    src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp
-    src/gpu/d3d11_pipeline.cpp src/gpu/d3d11_guide_extractor.cpp src/gpu/d3d11_resource_tracker.cpp src/gpu/d3d11_camera_tracker.cpp src/gpu/d3d12_on12.cpp src/gpu/nv_optical_flow.cpp
+    src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp src/bridge/attach_logger.cpp
+    src/gpu/d3d11_pipeline.cpp src/gpu/d3d11_guide_extractor.cpp src/gpu/d3d11_resource_tracker.cpp src/gpu/d3d11_camera_tracker.cpp
+    src/gpu/d3d12_resource_tracker.cpp src/gpu/game_temporal_guides.cpp src/gpu/d3d12_on12.cpp src/gpu/nv_optical_flow.cpp
     src/neural/passthrough.cpp src/neural/ingame_nr.cpp src/neural/ngx_nr.cpp src/neural/external_host.cpp src/neural/streamline_nr.cpp
     src/common/shared_control_win.cpp)
   target_compile_definitions(UniversalDLSS5.Bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

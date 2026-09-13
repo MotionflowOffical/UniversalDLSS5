@@ -2,6 +2,8 @@
 #include "udlss/settings.hpp"
 #include "udlss/shared_control.hpp"
 #include "udlss/game_guides_api.hpp"
+#include "udlss/native_motion_policy.hpp"
+#include "udlss/game_guide_policy.hpp"
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <string>
@@ -18,8 +20,12 @@ struct GuideProbeResult {
     bool depthConventionKnown{};
     bool cameraCut{};
     bool motionConventionValid{};
+    NativeMotionEncoding motionEncoding{NativeMotionEncoding::PixelCurrentToPrevious};
     bool controlMaskConventionValid{};
     float motionScaleX{1.0f}, motionScaleY{1.0f};
+    std::uint32_t motionWidth{},motionHeight{},motionConfidence{};
+    std::uint32_t depthWidth{},depthHeight{},depthConfidence{};
+    GameGuideSource source{GameGuideSource::None};
     bool fromAdapter{};
     std::wstring provider;
 };

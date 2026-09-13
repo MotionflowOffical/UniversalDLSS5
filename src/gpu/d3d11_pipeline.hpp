@@ -16,7 +16,7 @@ public:
  D3D11Pipeline()=default;~D3D11Pipeline();
  bool initialize(ID3D11Device* device,ID3D11DeviceContext* context,const std::wstring& moduleDir,RuntimeStatus& status);
  void setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queue);
- bool process(ID3D11Texture2D* backbuffer,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status);
+ bool process(ID3D11Texture2D* backbuffer,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status,const GuideProbeResult* externalGuide=nullptr);
  void reset();
  void retryNeural();
 private:

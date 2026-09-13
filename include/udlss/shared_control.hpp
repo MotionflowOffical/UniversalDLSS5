@@ -8,7 +8,7 @@
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 17;
+constexpr std::uint32_t kControlAbi = 18;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
 enum class GraphicsApi : std::uint32_t { Unknown=0, D3D11=11, D3D12=12 };
@@ -47,6 +47,12 @@ struct RuntimeStatus {
     std::uint32_t temporalResetThisFrame{};
     std::uint64_t nativeMotionCandidateId{};
     std::uint32_t nativeMotionCandidateScore{};
+    std::uint32_t guideMotionWidth{};
+    std::uint32_t guideMotionHeight{};
+    std::uint32_t guideMotionConfidence{};
+    std::uint32_t guideDepthWidth{};
+    std::uint32_t guideDepthHeight{};
+    std::uint32_t guideDepthConfidence{};
     std::uint32_t cameraCurrentValid{};
     std::uint32_t cameraPreviousValid{};
     std::uint32_t cameraConfidence{};

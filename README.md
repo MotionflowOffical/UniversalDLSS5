@@ -1,5 +1,7 @@
 # UniversalDLSS5
 
+**Current version:** v0.3.1
+
 > **Experimental graphics-injection software.** UniversalDLSS5 injects its bridge into a user-selected process and hooks DXGI/D3D rendering APIs. Some antivirus/EDR products may flag those techniques heuristically. Verify the GitHub release/hash/source and investigate warnings rather than disabling security software. Avoid anti-cheat, DRM-protected, protected system, or other processes where third-party injection is not permitted.
 
 ## Quick start for GitHub releases
@@ -11,6 +13,26 @@
 5. Press **Check runtime**, select a running application, then **Attach**.
 
 The installer and portable release deliberately do **not** include NVIDIA proprietary runtime binaries. See [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) for the detailed setup and security notes.
+
+### v0.3.1 D3D12 queue/backbuffer safety
+
+- Late-injected D3D12 games no longer use the most recently observed same-device DIRECT queue. UniversalDLSS5 tracks command lists that transition the swapchain backbuffers and requires repeated evidence that those lists execute on the same DIRECT queue before processing begins.
+- If queue ownership cannot be proven, the bridge stays in passthrough rather than risking a crash.
+- The D3D12 game backbuffer is no longer wrapped directly with D3D11On12. It is copied to an injector-owned GPU color resource, processed there, and copied back on the proven presentation queue.
+- Serious exceptions are annotated with a fine crash-stage marker in the attach log so failures can be distinguished between queue proof, pre-copy, D3D11On12 acquire/release, neural processing, post-copy, and DXGI Present.
+- See [`docs/V0.3.1_D3D12_QUEUE_SAFETY.md`](docs/V0.3.1_D3D12_QUEUE_SAFETY.md).
+
+## Real game motion/depth guides and safer attach
+
+- **Game-supplied guides first:** when a game already submits DLSS/NGX or Streamline temporal inputs, the bridge captures the game's own depth, motion-vector scale, reset/camera-cut state and resource extent and reuses those guides for Neural Rendering. UniversalDLSS5 suppresses capture around its own NGX/Streamline calls so it cannot mistake its generated resources for game resources.
+- **D3D12 guide tracking:** D3D12 resource-barrier activity is tracked after the primary swapchain becomes stable. Conservative scoring can automatically select a stable scene-depth resource at internal/dynamic resolution. Heuristic D3D12 motion candidates remain diagnostic-only unless their convention is known; an unknown velocity encoding is safer to reject than to feed incorrect motion into Feature 18.
+- **D3D11 dynamic-resolution tracking:** native depth/motion candidates no longer need to exactly match the presentation resolution. Candidate stability, aspect ratio, write/read behavior and internal render size are scored across frames, then guide shaders resample them to output resolution.
+- **Guide priority:** explicit GameGuides adapter -> game NGX inputs -> game Streamline tags -> D3D12 tracker -> D3D11 tracker -> camera/depth reconstruction -> optical flow -> zero motion.
+- **Safe attach:** graphics-heavy D3D12 initialization is delayed until a real direct queue and a stable primary Present stream have been observed. The injector now writes `%LOCALAPPDATA%\UniversalDLSS5\logs\inject-<PID>.log` before loading any bridge code, and each started bridge writes a staged `attach-<PID>.log` in the same folder. The **Diagnostics -> Open attach logs** action opens that folder. If a title such as Hitman fails before the bridge starts, use the injector log; if it fails later, the attach log shows the last completed graphics/neural stage.
+- **Global appearance:** System/Light/Dark is a controller preference rather than a per-game profile. Switching target applications or restarting the controller preserves the selected appearance.
+
+Diagnostics now report the provider plus motion/depth guide resolution and confidence when a real guide is selected. Guide capture is intentionally conservative: availability depends on the game's integration and unknown motion-vector conventions are not guessed.
+See [`docs/GAME_GUIDES_SAFE_ATTACH.md`](docs/GAME_GUIDES_SAFE_ATTACH.md) for guide-source behavior, Hitman-style attach logging, and troubleshooting.
 
 ## Stable renderer ownership, scheduler, multipass, and controller UI update
 
@@ -32,20 +54,26 @@ The installer and portable release deliberately do **not** include NVIDIA propri
 - **Non-DLSS games supported:** the bridge creates its own same-adapter D3D12 neural execution context for D3D11 games; the game does not need to ship DLSS or Streamline.
 - **Backend order:** authorized Streamline feature 1004 when `sl.interposer.dll` + `sl.common.dll` + `sl.dlss_nr.dll` are supplied, then the proven signed feature-18 forwarder path, then automatic external-NRHost fallback.
 - **Motion-source order (Auto):** explicit GameGuides native motion -> detected game-native velocity -> camera matrices + real depth -> NVIDIA Optical Flow -> safe zero motion. The coarse HLSL block matcher is available only through the explicit experimental Optical Flow mode.
-- **Unity/D3D11 tracking:** shader reflection can recognize `_CameraMotionVectorsTexture`; the bridge also tracks dominant full-resolution depth across the frame and current/previous view-projection candidates from constant buffers.
+- **D3D11 tracking:** shader reflection can recognize `_CameraMotionVectorsTexture`; the bridge also tracks stable internal-resolution depth/motion candidates across the frame and current/previous view-projection candidates from constant buffers.
 - **Camera reconstruction:** `camera_motion.hlsl` creates current->previous pixel motion from real depth plus validated current/previous view-projection matrices.
 - **No CPU frame path:** color/depth/motion/control resources remain on GPU. No screenshot capture, framebuffer staging readback, WGC, BitBlt, or arbitrary process-memory scanning is added.
 - **External host preserved:** the v0.2.7 NRHost path remains available both as an explicit backend and as an automatic fallback when the in-game mount cannot initialize.
-- **Honest limitation:** automatic native-resource tracking is currently D3D11-focused. D3D12 source games still use the existing D3D12On12 guide path unless an explicit game adapter provides richer guides.
+- **Honest limitation:** game-supplied NGX/Streamline motion and depth can now be captured on D3D11 and D3D12. Generic D3D12 scene-depth discovery is also available, but heuristic D3D12 motion remains diagnostics-only until its vector convention is known; UniversalDLSS5 deliberately refuses to guess an unknown velocity encoding.
+
+## Important design rule: no screenshots
+
+The frame path never uses desktop/window capture, GDI screenshots, D3D staging textures, or D3D12 readback heaps. Frames move through GPU resources only. CPU access is limited to configuration, process control, diagnostics, and small constant-buffer uploads.
+
+`tools/audit_no_readback.py` enforces this rule for the source tree.
 
 ## Current rendering paths
 
 - **D3D11 source, default:** DXGI/D3D11 interception -> frame-complete resource/camera tracking -> native/camera/NVOFA/safe-zero guide composer -> direct in-game NR mount. The mount creates a private same-adapter D3D12 device/queue when the source game does not already provide one.
-- **D3D12 source:** the existing D3D11On12 guide bridge captures the source device/queue and passes those native D3D12 objects into the same in-game neural backend. Native D3D12 G-buffer discovery is not yet as complete as the D3D11 tracker.
+- **D3D12 source:** the D3D11On12 guide bridge captures the source device/queue, consumes game-supplied NGX/Streamline depth and motion when available, and can discover stable D3D12 scene-depth resources from barrier history. Generic D3D12 motion candidates are scored for diagnostics but are not consumed until their vector convention is known.
 - **Direct in-game backend order:** Streamline DLSS-NR feature 1004 when a complete user-supplied Streamline NR stack validates; otherwise caller-compatible signed feature 18 through `nvngx.dll_UniversalDLSS5_NRForwarder.dll`.
 - **Automatic fallback:** if both in-game routes fail to initialize, the bridge attempts the proven x64 External NR Host. Passthrough is only the final fallback.
 - **Motion (Auto):** explicit GameGuides motion -> positively identified native game velocity -> camera+real-depth reconstruction -> NVIDIA Optical Flow Accelerator -> safe zero motion. The HLSL block-search route is opt-in/experimental rather than an automatic fallback.
-- **Depth:** D3D11 tracks the dominant exact-size scene DSV across the completed frame and uses its clear value as a reversed-Z/conventional-Z hint. An explicit GameGuides adapter can override it; synthetic far depth is the last fallback.
+- **Depth:** game-supplied NGX/Streamline depth is preferred. D3D12/D3D11 trackers can then select stable scene depth at compatible internal resolutions and use observed metadata/clear behavior as convention hints. An explicit GameGuides adapter overrides automatic discovery; synthetic far depth is the last fallback.
 - **Camera data:** D3D11 vertex-shader reflection and constant-buffer update/bind tracking are used conservatively to recover a stable view-projection sequence without arbitrary process-memory scanning.
 - **Multi-process applications:** the controller follows the selected process tree and preferentially attaches to children that have loaded DXGI.
 
@@ -172,7 +200,7 @@ See `docs/NVIDIA_RUNTIME_SETUP.md` for detailed setup.
 2. Select the running root application, such as `chrome.exe` or a 2D game.
 3. Select the runtime folder.
 4. Choose a preset and adjust sliders if desired.
-5. Leave **Direct in-game NR (recommended)** selected for normal testing, then press **Attach**. If the direct mount fails, v0.2.8 automatically attempts the External NR Host before passthrough.
+5. Leave **Direct in-game NR (recommended)** selected for normal testing, then press **Attach**. If the direct mount fails, v0.3.1 automatically attempts the External NR Host before passthrough.
 6. For multi-process browsers, leave **Attach process tree** enabled; the controller continues watching for a DXGI GPU child that appears later.
 7. Use **Reset history** after a large tuning change if temporal artifacts persist.
 8. Press **Detach** to ask all injected bridges in the session to unload.
@@ -181,7 +209,7 @@ Avoid anti-cheat/DRM/system processes. This project does not include bypasses fo
 
 ## Verification in this package
 
-Portable tests cover settings normalization, legacy-profile migration to the direct in-game backend, NVOFA policy, tuning presets, reset-generation handling, swapchain-primary selection, runtime-file policy (signed-feature runtime required, Streamline plugin optional), injection/CIG policy, low-integrity IPC security, runtime/stage diagnostics, D3D12 flip-model backbuffer rotation, app grouping, persistent NGX failures, D3D12 neural routing, native-motion/depth/camera policies, Streamline mount wiring, external-host fallback policy, and Windows build wiring. The no-readback audit separately checks the rendering source for screenshot/staging/readback APIs.
+Portable tests cover settings normalization, controller-theme persistence, safe-attach timing, injection-lifecycle wiring, temporal-guide source priority/candidate scoring, legacy-profile migration, NVOFA policy, tuning presets, reset-generation handling, swapchain-primary selection, runtime-file policy (signed-feature runtime required, Streamline plugin optional), injection/CIG policy, low-integrity IPC security, runtime/stage diagnostics, D3D12 flip-model backbuffer rotation, app grouping, persistent NGX failures, D3D12 neural routing, native-motion/depth/camera policies, Streamline/NGX guide-capture wiring, external-host fallback policy, and Windows build wiring. The no-readback audit separately checks the rendering source for screenshot/staging/readback APIs.
 
 The Linux CI-style checks used while producing this package exercise the portable components only; the Windows interception binaries must be compiled and runtime-tested on Windows because this environment does not provide the Windows SDK/MSVC graphics toolchain.
 

@@ -13,6 +13,7 @@
 #include "udlss/ngx_failure_policy.hpp"
 #include "udlss/neural_route_policy.hpp"
 #include "udlss/neural_scheduler_policy.hpp"
+#include "../gpu/game_temporal_guides.hpp"
 
 #ifdef UDLSS_WITH_NGX_NR
 #include <nvsdk_ngx.h>
@@ -26,7 +27,7 @@ namespace udlss::neural {
 #ifdef UDLSS_WITH_NGX_NR
 namespace {
 constexpr const char* kProjectId = "a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kEngineVersion = "0.2.8";
+constexpr const char* kEngineVersion = "0.3.1";
 constexpr NVSDK_NGX_Feature kFeatureDLSSNR = NVSDK_NGX_Feature_Reserved18;
 constexpr std::size_t kFrameSlots = 8;
 constexpr std::size_t kInitialFrameSlots = 3;
@@ -410,6 +411,7 @@ public:
     }
 
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& status) override {
+        gpu::GameGuideCaptureGuard captureGuard;
         status.neuralApi=NeuralExecutionApi::D3D12;
         status.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
         status.framePacingMode=static_cast<std::uint32_t>(settings.framePacing);

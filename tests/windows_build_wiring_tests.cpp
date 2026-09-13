@@ -23,8 +23,8 @@ int main() {
     const std::filesystem::path root = UDLSS_SOURCE_DIR;
     const auto cmake = readFile(root / "CMakeLists.txt");
     const auto buildScript = readFile(root / "BUILD_WINDOWS.bat");
-    if (cmake.find("project(UniversalDLSS5 VERSION 0.2.8") == std::string::npos ||
-        buildScript.find("UniversalDLSS5 v0.2.8") == std::string::npos ||
+    if (cmake.find("project(UniversalDLSS5 VERSION 0.3.1") == std::string::npos ||
+        buildScript.find("UniversalDLSS5 v0.3.1") == std::string::npos ||
         buildScript.find("-DUDLSS_WITH_STREAMLINE=ON") == std::string::npos) {
         std::cerr << "v0.2.8 Windows build does not enable the direct in-game Streamline mount/header path\n";
         return 1;
