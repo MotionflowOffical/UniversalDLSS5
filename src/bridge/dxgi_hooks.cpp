@@ -29,7 +29,7 @@ using CreateCompFn=HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory2*,IUnknown*,const DX
 using ExecuteFn=void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*,UINT,ID3D12CommandList*const*);
 PresentFn origPresent{};Present1Fn origPresent1{};ResizeFn origResize{};CreateSwapFn origCreateSwap{};CreateHwndFn origCreateHwnd{};CreateCoreFn origCreateCore{};CreateCompFn origCreateComp{};ExecuteFn origExecute{};
 HMODULE self{};SharedControl* ctl{};std::mutex mx;IDXGISwapChain* primary{};thread_local bool inside{};ComPtr<ID3D12CommandQueue> recentQueue;
-struct SwapCtx{ComPtr<ID3D12CommandQueue> q12;std::unique_ptr<gpu::D3D11Pipeline> p11;std::unique_ptr<gpu::D3D12On12Pipeline> p12;GenerationTracker resetGeneration;GenerationTracker neuralRetryGeneration;std::uint32_t width{},height{};std::uint64_t frames{},processed{},bypassed{},neural{},lastTick{};double fps{};};
+struct SwapCtx{ComPtr<ID3D12CommandQueue> q12;std::unique_ptr<gpu::D3D11Pipeline> p11;std::unique_ptr<gpu::D3D12On12Pipeline> p12;GenerationTracker resetGeneration;GenerationTracker neuralRetryGeneration;GraphicsApi api{GraphicsApi::Unknown};std::uint32_t width{},height{};std::uint64_t frames{},processed{},bypassed{},neural{},lastTick{};double fps{};};
 std::unordered_map<IDXGISwapChain*,std::unique_ptr<SwapCtx>> swaps;
 struct TrackingGuard{TrackingGuard(){gpu::setD3D11TrackingSuppressed(true);}~TrackingGuard(){gpu::setD3D11TrackingSuppressed(false);}};
 std::wstring moduleDir(){wchar_t p[32768];DWORD n=GetModuleFileNameW(self,p,_countof(p));return fs::path(std::wstring(p,n)).parent_path().wstring();}
@@ -45,6 +45,13 @@ bool process(IDXGISwapChain*s){
  const auto resetGen=ctl->historyResetGeneration();if(c.resetGeneration.consume(resetGen)){if(c.p11)c.p11->reset();if(c.p12)c.p12->reset();}
  const auto retryGen=ctl->neuralRetryGeneration();if(c.neuralRetryGeneration.consume(retryGen)){if(c.p11)c.p11->retryNeural();if(c.p12)c.p12->retryNeural();}
  DXGI_SWAP_CHAIN_DESC sd{};if(SUCCEEDED(s->GetDesc(&sd))){st.width=sd.BufferDesc.Width;st.height=sd.BufferDesc.Height;c.width=st.width;c.height=st.height;}
+ // The controller elects one renderer PID across launcher/helper/overlay
+ // processes. Non-primary bridges keep publishing lightweight status but do
+ // not execute the neural path, preventing cross-process on/off flicker.
+ const auto electedRenderer=ctl->primaryRendererPid();
+ if(electedRenderer && electedRenderer!=GetCurrentProcessId()){
+  st.api=c.api;st.state=RuntimeState::Bypassed;st.neuralActive=0;++c.bypassed;wcscpy_s(st.message,L"suppressed by primary renderer election");writeStatus(c,st);inside=false;return false;
+ }
  if(!set.processSecondarySwapchains){
   bool selected=false;{std::scoped_lock l(mx);if(primary==s)selected=true;else{std::uint64_t primaryTick=0,primaryPixels=0;bool hasPrimary=primary!=nullptr;auto it=primary?swaps.find(primary):swaps.end();if(it!=swaps.end()&&it->second){primaryTick=it->second->lastTick;primaryPixels=(std::uint64_t)it->second->width*it->second->height;}const std::uint64_t pixels=(std::uint64_t)c.width*c.height;if(shouldPromotePrimary(hasPrimary,primaryTick,GetTickCount64(),pixels,primaryPixels)){primary=s;selected=true;}}}
   if(!selected){++c.bypassed;inside=false;return false;}
@@ -52,7 +59,7 @@ bool process(IDXGISwapChain*s){
  bool ok=false;
  ComPtr<ID3D11Device>d11;
  if(SUCCEEDED(s->GetDevice(IID_PPV_ARGS(&d11)))){
-  st.api=GraphicsApi::D3D11;markPipelineStage(st.stageMask,PipelineStage::SourceApiDetected);
+  st.api=GraphicsApi::D3D11;c.api=st.api;markPipelineStage(st.stageMask,PipelineStage::SourceApiDetected);
   gpu::globalD3D11ResourceTracker().finalizeFrame(d11.Get(),st.width,st.height);
   gpu::globalD3D11CameraTracker().finalizeFrame(d11.Get());
   if(!c.p11){ComPtr<ID3D11DeviceContext>ctx;d11->GetImmediateContext(&ctx);c.p11=std::make_unique<gpu::D3D11Pipeline>();if(!c.p11->initialize(d11.Get(),ctx.Get(),moduleDir(),st)){if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::GuideResourcesFailed;c.p11.reset();}}
@@ -60,7 +67,7 @@ bool process(IDXGISwapChain*s){
  }else{
   ComPtr<ID3D12Device>d12;
   if(SUCCEEDED(s->GetDevice(IID_PPV_ARGS(&d12)))){
-   st.api=GraphicsApi::D3D12;markPipelineStage(st.stageMask,PipelineStage::SourceApiDetected);
+   st.api=GraphicsApi::D3D12;c.api=st.api;markPipelineStage(st.stageMask,PipelineStage::SourceApiDetected);
    if(!c.q12){ComPtr<ID3D12CommandQueue> rq;{std::scoped_lock l(mx);rq=recentQueue;}if(rq){ComPtr<ID3D12Device>qd;if(SUCCEEDED(rq->GetDevice(IID_PPV_ARGS(&qd)))){ComPtr<IUnknown>a,b;d12.As(&a);qd.As(&b);if(a.Get()==b.Get())c.q12=rq;}}}
    if(c.q12&&set.allowD3D11On12){if(!c.p12){c.p12=std::make_unique<gpu::D3D12On12Pipeline>();if(!c.p12->initialize(c.q12.Get(),moduleDir(),st)){if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::GuideResourcesFailed;c.p12.reset();}}if(c.p12)ok=c.p12->process(s,set,runtimePath(),st);}
    else{st.failureStage=PipelineStage::QueueCaptureFailed;wcscpy_s(st.message,L"D3D12 source detected but its DIRECT command queue was not captured, or D3D11On12 is disabled");}

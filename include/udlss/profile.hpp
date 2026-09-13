@@ -30,7 +30,8 @@ inline std::string encodeProfile(const Settings& in) {
       << "latencyMode=" << static_cast<unsigned>(s.latencyMode) << '\n'
       << "hdrMode=" << static_cast<unsigned>(s.hdrMode) << '\n'
       << "depthMode=" << static_cast<unsigned>(s.depthMode) << '\n'
-      << "debugView=" << static_cast<unsigned>(s.debugView) << '\n' 
+      << "debugView=" << static_cast<unsigned>(s.debugView) << '\n'
+      << "uiTheme=" << static_cast<unsigned>(s.uiTheme) << '\n' 
       << "sharpness=" << s.sharpness << '\n'
       << "exposure=" << s.exposure << '\n'
       << "temporalStrength=" << s.temporalStrength << '\n'
@@ -55,7 +56,8 @@ inline std::string encodeProfile(const Settings& in) {
       << "nrColorStrength=" << s.nrColorStrength << '\n'
       << "debugSplit=" << s.debugSplit << '\n'
       << "nrStyle=" << s.nrStyle << '\n'
-      << "nrPreset=" << s.nrPreset << '\n' 
+      << "nrPreset=" << s.nrPreset << '\n'
+      << "nrPasses=" << s.nrPasses << '\n' 
       << "flowSearchRadius=" << s.flowSearchRadius << '\n'
       << "flowDownsample=" << s.flowDownsample << '\n'
       << "maxFramesInFlight=" << s.maxFramesInFlight << '\n';
@@ -85,14 +87,14 @@ inline bool decodeProfile(std::string_view text, Settings& out) {
         else if(k=="backend"){std::uint32_t x=0;setU(v,x);s.backend=static_cast<BackendMode>(x>2?2:x);backendSeen=true;} 
         else if(k=="motionSource"){std::uint32_t x=0;setU(v,x);s.motionSource=static_cast<MotionSource>(x>2?0:x);} 
         else if(k=="latencyMode"){std::uint32_t x=0;setU(v,x);s.latencyMode=static_cast<LatencyMode>(x>2?0:x);} 
-        else if(k=="hdrMode"){std::uint32_t x=0;setU(v,x);s.hdrMode=static_cast<HdrMode>(x>2?0:x);} else if(k=="depthMode"){std::uint32_t x=0;setU(v,x);s.depthMode=static_cast<DepthGuideMode>(x>3?0:x);} else if(k=="debugView"){std::uint32_t x=0;setU(v,x);s.debugView=static_cast<DebugView>(x>8?0:x);} 
+        else if(k=="hdrMode"){std::uint32_t x=0;setU(v,x);s.hdrMode=static_cast<HdrMode>(x>2?0:x);} else if(k=="uiTheme"){std::uint32_t x=0;setU(v,x);s.uiTheme=static_cast<UiTheme>(x>2?0:x);} else if(k=="depthMode"){std::uint32_t x=0;setU(v,x);s.depthMode=static_cast<DepthGuideMode>(x>3?0:x);} else if(k=="debugView"){std::uint32_t x=0;setU(v,x);s.debugView=static_cast<DebugView>(x>8?0:x);} 
         else if(k=="sharpness") setF(v,s.sharpness); else if(k=="exposure") setF(v,s.exposure);
         else if(k=="temporalStrength") setF(v,s.temporalStrength); else if(k=="motionScale") setF(v,s.motionScale); else if(k=="motionScaleX") setF(v,s.motionScaleX); else if(k=="motionScaleY") setF(v,s.motionScaleY); else if(k=="staticMotionDeadzone") setF(v,s.staticMotionDeadzone);
         else if(k=="flowConfidenceThreshold") setF(v,s.flowConfidenceThreshold); else if(k=="disocclusionThreshold") setF(v,s.disocclusionThreshold);
         else if(k=="textProtection") setF(v,s.textProtection); else if(k=="uiProtection") setF(v,s.uiProtection);
         else if(k=="controlMaskStrength") setF(v,s.controlMaskStrength); else if(k=="historyClamp") setF(v,s.historyClamp);
         else if(k=="reactiveStrength") setF(v,s.reactiveStrength); else if(k=="edgeThreshold") setF(v,s.edgeThreshold);
-        else if(k=="nrIntensity") setF(v,s.nrIntensity); else if(k=="nrTone") setF(v,s.nrTone); else if(k=="nrStructure") setF(v,s.nrStructure); else if(k=="nrSkinStructure") setF(v,s.nrSkinStructure); else if(k=="nrPaperWhite") setF(v,s.nrPaperWhite); else if(k=="nrTransferStrength") setF(v,s.nrTransferStrength); else if(k=="nrColorStrength") setF(v,s.nrColorStrength); else if(k=="debugSplit") setF(v,s.debugSplit); else if(k=="nrStyle") setU(v,s.nrStyle); else if(k=="nrPreset") setU(v,s.nrPreset);
+        else if(k=="nrIntensity") setF(v,s.nrIntensity); else if(k=="nrTone") setF(v,s.nrTone); else if(k=="nrStructure") setF(v,s.nrStructure); else if(k=="nrSkinStructure") setF(v,s.nrSkinStructure); else if(k=="nrPaperWhite") setF(v,s.nrPaperWhite); else if(k=="nrTransferStrength") setF(v,s.nrTransferStrength); else if(k=="nrColorStrength") setF(v,s.nrColorStrength); else if(k=="debugSplit") setF(v,s.debugSplit); else if(k=="nrStyle") setU(v,s.nrStyle); else if(k=="nrPreset") setU(v,s.nrPreset); else if(k=="nrPasses") setU(v,s.nrPasses);
         else if(k=="flowSearchRadius") setU(v,s.flowSearchRadius); else if(k=="flowDownsample") setU(v,s.flowDownsample);
         else if(k=="maxFramesInFlight") setU(v,s.maxFramesInFlight);
     }
@@ -114,6 +116,10 @@ inline bool decodeProfile(std::string_view text, Settings& out) {
         // -1 is the runtime's documented/observed auto value for skin structure.
         if(storedVersion==6) { s.nrAutoMask=false; s.nrUiCorrection=false; }
     }
+    // v9 raises the neural command-ring floor and adds multipass/UI theme.
+    // Old profiles commonly stored the former one-frame default. Move that
+    // to the new latency-tolerant default instead of pinning it to the clamp floor.
+    if(storedVersion>0 && storedVersion<9 && s.maxFramesInFlight<3) s.maxFramesInFlight=6;
     // v7 briefly used 0 as the fresh-profile skin default. Restore the
     // runtime's auto sentinel without touching user-customized values.
     if(storedVersion==7 && std::fabs(s.nrSkinStructure-0.0f)<1e-5f) s.nrSkinStructure=-1.0f;

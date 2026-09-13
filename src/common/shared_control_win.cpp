@@ -66,13 +66,23 @@ Settings SharedControl::readSettings() const{
 }
 
 void SharedControl::writeSettings(const Settings& in){ if(!block_)return; Settings s=in; normalize(s); InterlockedIncrement((volatile LONG*)&block_->settingsSeq); MemoryBarrier(); block_->settings=s; MemoryBarrier(); InterlockedIncrement((volatile LONG*)&block_->settingsSeq); InterlockedIncrement((volatile LONG*)&block_->profileGeneration); }
-RuntimeStatus SharedControl::readStatus() const{
-    RuntimeStatus out{}; if(!block_)return out;
+std::array<RuntimeStatus,32> SharedControl::readStatuses() const{
+    std::array<RuntimeStatus,32> out{}; if(!block_)return out;
     for(int attempt=0;attempt<8;++attempt){
         LONG a=InterlockedCompareExchange((volatile LONG*)&block_->statusSeq,0,0); if(a&1){YieldProcessor();continue;} MemoryBarrier();
-        RuntimeStatus best{}; for(const auto& s:block_->statuses) if(s.pid && s.lastTickMs>=best.lastTickMs) best=s;
-        MemoryBarrier(); LONG b=InterlockedCompareExchange((volatile LONG*)&block_->statusSeq,0,0); if(a==b && !(b&1)) return best;
-    } return out;
+        for(std::size_t i=0;i<out.size();++i) out[i]=block_->statuses[i];
+        MemoryBarrier(); LONG b=InterlockedCompareExchange((volatile LONG*)&block_->statusSeq,0,0); if(a==b && !(b&1)) return out;
+    } return {};
+}
+RuntimeStatus SharedControl::readStatus() const{
+    const auto statuses=readStatuses();
+    const auto preferred=primaryRendererPid();
+    RuntimeStatus best{};
+    for(const auto& s:statuses){
+        if(preferred && s.pid==preferred) return s;
+        if(s.pid && s.lastTickMs>=best.lastTickMs) best=s;
+    }
+    return best;
 }
 void SharedControl::writeStatus(const RuntimeStatus& s){
     if(!block_)return; InterlockedIncrement((volatile LONG*)&block_->statusSeq); MemoryBarrier();
@@ -80,6 +90,8 @@ void SharedControl::writeStatus(const RuntimeStatus& s){
     for(int i=0;i<32;++i){auto& x=block_->statuses[i]; if(x.pid==s.pid){slot=i;break;} if(!x.pid&&empty<0)empty=i; if(x.lastTickMs<oldestTick){oldestTick=x.lastTickMs;oldest=i;}}
     if(slot<0)slot=empty>=0?empty:oldest; block_->statuses[slot]=s; MemoryBarrier(); InterlockedIncrement((volatile LONG*)&block_->statusSeq);
 }
+void SharedControl::setPrimaryRendererPid(std::uint32_t pid){ if(block_) InterlockedExchange((volatile LONG*)&block_->primaryRendererPid,(LONG)pid); }
+std::uint32_t SharedControl::primaryRendererPid() const { return block_ ? (std::uint32_t)InterlockedCompareExchange((volatile LONG*)&block_->primaryRendererPid,0,0) : 0u; }
 void SharedControl::setRuntimePath(const wchar_t* p){ if(!block_)return; wcsncpy_s(block_->runtimePath,p?p:L"",_TRUNCATE); }
 void SharedControl::requestUnload(bool value){ if(block_) InterlockedExchange((volatile LONG*)&block_->requestUnload,value?1:0); }
 void SharedControl::requestHistoryReset(){ if(block_) InterlockedIncrement((volatile LONG*)&block_->historyResetGeneration); }
@@ -88,5 +100,5 @@ void SharedControl::requestNeuralRetry(){ if(block_) InterlockedIncrement((volat
 std::uint32_t SharedControl::neuralRetryGeneration() const { return block_ ? (std::uint32_t)InterlockedCompareExchange((volatile LONG*)&block_->neuralRetryGeneration,0,0) : 0u; }
 }
 #else
-namespace udlss { SharedControl::~SharedControl(){} bool SharedControl::create(){return false;} bool SharedControl::open(){return false;} void SharedControl::close(){} Settings SharedControl::readSettings()const{return defaultSettings();} void SharedControl::writeSettings(const Settings&){} RuntimeStatus SharedControl::readStatus()const{return{};} void SharedControl::writeStatus(const RuntimeStatus&){} void SharedControl::setRuntimePath(const wchar_t*){} void SharedControl::requestUnload(bool){} void SharedControl::requestHistoryReset(){} std::uint32_t SharedControl::historyResetGeneration()const{return 0;} void SharedControl::requestNeuralRetry(){} std::uint32_t SharedControl::neuralRetryGeneration()const{return 0;} }
+namespace udlss { SharedControl::~SharedControl(){} bool SharedControl::create(){return false;} bool SharedControl::open(){return false;} void SharedControl::close(){} Settings SharedControl::readSettings()const{return defaultSettings();} void SharedControl::writeSettings(const Settings&){} RuntimeStatus SharedControl::readStatus()const{return{};} std::array<RuntimeStatus,32> SharedControl::readStatuses()const{return{};} void SharedControl::writeStatus(const RuntimeStatus&){} void SharedControl::setPrimaryRendererPid(std::uint32_t){} std::uint32_t SharedControl::primaryRendererPid()const{return 0;} void SharedControl::setRuntimePath(const wchar_t*){} void SharedControl::requestUnload(bool){} void SharedControl::requestHistoryReset(){} std::uint32_t SharedControl::historyResetGeneration()const{return 0;} void SharedControl::requestNeuralRetry(){} std::uint32_t SharedControl::neuralRetryGeneration()const{return 0;} }
 #endif

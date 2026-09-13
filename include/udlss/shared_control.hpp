@@ -2,12 +2,13 @@
 #include "settings.hpp"
 #include "runtime_diagnostics.hpp"
 #include "neural_route_policy.hpp"
+#include <array>
 #include <cstdint>
 #include <cwchar>
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 15;
+constexpr std::uint32_t kControlAbi = 16;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
 enum class GraphicsApi : std::uint32_t { Unknown=0, D3D11=11, D3D12=12 };
@@ -50,6 +51,15 @@ struct RuntimeStatus {
     std::uint32_t cameraPreviousValid{};
     std::uint32_t cameraConfidence{};
     std::uint32_t temporalHistoryValid{};
+    std::uint32_t queueDepth{};
+    std::uint32_t queueCapacity{};
+    std::uint32_t queueLimit{};
+    std::uint32_t neuralPassesRequested{1};
+    std::uint32_t neuralPassesExecuted{};
+    std::uint32_t reusedNeuralOutput{};
+    std::uint32_t schedulerBackpressure{};
+    std::uint64_t schedulerBackpressureFrames{};
+    std::uint64_t reusedNeuralFrames{};
     wchar_t temporalReason[96]{};
     wchar_t backendName[64]{};
     wchar_t flowName[96]{};
@@ -68,6 +78,7 @@ struct SharedControlBlock {
     volatile long profileGeneration{};
     volatile long historyResetGeneration{};
     volatile long neuralRetryGeneration{};
+    volatile long primaryRendererPid{};
     std::uint32_t rootPid{};
     Settings settings{};
     wchar_t runtimePath[512]{};
@@ -88,7 +99,10 @@ public:
     Settings readSettings() const;
     void writeSettings(const Settings& settings);
     RuntimeStatus readStatus() const;
+    std::array<RuntimeStatus,32> readStatuses() const;
     void writeStatus(const RuntimeStatus& status);
+    void setPrimaryRendererPid(std::uint32_t pid);
+    std::uint32_t primaryRendererPid() const;
     void setRuntimePath(const wchar_t* path);
     void requestUnload(bool value);
     void requestHistoryReset();

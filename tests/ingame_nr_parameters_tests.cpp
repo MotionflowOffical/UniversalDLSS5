@@ -26,5 +26,5 @@ int main(){
  assert(s.find("settings.nrStructure")!=std::string::npos);
  assert(s.find("settings.nrSkinStructure")!=std::string::npos);
  assert(s.find("settings.nrUiCorrection")!=std::string::npos);
- assert(s.find("controlMask_")!=std::string::npos);
+ assert(s.find("slot.controlMask")!=std::string::npos);
 }

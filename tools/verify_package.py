@@ -158,8 +158,8 @@ if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 15' not in shared:
-    fail('v0.2.8 diagnostics/control layout must use control ABI 15')
+if 'kControlAbi = 16' not in shared:
+    fail('scheduler/multipass diagnostics layout must use control ABI 16')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')

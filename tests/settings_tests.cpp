@@ -36,7 +36,7 @@ int main() {
     assert(s.flowDownsample == 4); // normalized to supported power-of-two
     assert(nearf(s.textProtection, 1.0f));
     assert(nearf(s.disocclusionThreshold, 0.0f));
-    assert(s.maxFramesInFlight == 3);
+    assert(s.maxFramesInFlight == 8);
     assert(nearf(s.staticMotionDeadzone, 0.0f));
     assert(nearf(s.nrIntensity, 2.0f));
     assert(nearf(s.nrTone, 0.0f));
@@ -64,6 +64,9 @@ int main() {
     assert(nearf(d.nrSkinStructure, -1.0f));
     assert(!d.nrAutoMask);
     assert(!d.nrUiCorrection);
+    assert(d.nrPasses == 1);
+    assert(d.maxFramesInFlight == 6);
+    assert(d.uiTheme == UiTheme::System);
 
     Settings ultra = d;
     ultra.latencyMode = LatencyMode::UltraLow;

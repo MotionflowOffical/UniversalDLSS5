@@ -1,5 +1,5 @@
-UniversalDLSS5 v0.2.8 - Feature-18 contract fix
-================================================
+UniversalDLSS5 v0.2.8 - Stable renderer/scheduler + multipass/UI update
+=====================================================================
 This ZIP contains exactly one top-level folder: UniversalDLSS5\
 
 To install over the previous source tree:
@@ -8,6 +8,12 @@ To install over the previous source tree:
 3. Choose Replace/Overwrite for existing files.
 4. Run BUILD_WINDOWS.bat again.
 
-The patch is already integrated; no .patch file needs to be applied manually.
+The fixes are already integrated; no .patch file needs to be applied manually.
 
-Main correction: direct in-game Feature 18 now follows the verified signed-snippet initialization, parameter-allocation, shared-resource, and evaluate parameter contract.
+This update keeps the working signed Feature-18 contract fix and adds:
+- stable primary-renderer election for multi-process/multi-swapchain applications;
+- non-flickering soft neural scheduler backpressure with a 3-8 slot GPU ring;
+- per-slot shared resources so in-flight frames cannot overwrite each other;
+- 1x-4x neural processing, with passes 2-4 isolated as same-frame refinements;
+- System / Light / Dark controller themes and modern owner-drawn controls;
+- background process-tree maintenance so opening the controller does not enumerate/inject on every UI tick.

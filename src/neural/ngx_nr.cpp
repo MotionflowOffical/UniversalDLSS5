@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 #include "udlss/ngx_failure_policy.hpp"
 #include "udlss/neural_route_policy.hpp"
+#include "udlss/neural_scheduler_policy.hpp"
 
 #ifdef UDLSS_WITH_NGX_NR
 #include <nvsdk_ngx.h>
@@ -25,7 +26,8 @@ namespace {
 constexpr const char* kProjectId = "a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
 constexpr const char* kEngineVersion = "0.2.8";
 constexpr NVSDK_NGX_Feature kFeatureDLSSNR = NVSDK_NGX_Feature_Reserved18;
-constexpr std::size_t kFrameSlots = 3;
+constexpr std::size_t kFrameSlots = 8;
+constexpr std::size_t kInitialFrameSlots = 3;
 constexpr unsigned long long kFallbackSnippetApplicationId = 0x0876232Cull;
 
 // Feature-18 names are isolated here until NVIDIA publishes a dedicated NR header.
@@ -217,6 +219,10 @@ struct FrameSlot {
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> list;
     std::uint64_t completionValue{};
+    std::uint64_t submissionSeq{};
+    SharedTexture input,output,scratch,motion,depth,controlMask;
+    bool finalInScratch{};
+    void resetTextures(){input.reset();output.reset();scratch.reset();motion.reset();depth.reset();controlMask.reset();finalInScratch=false;}
 };
 }
 
@@ -390,53 +396,84 @@ public:
 
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& status) override {
         status.neuralApi=NeuralExecutionApi::D3D12;
+        status.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
         if(!initialized_ || !params_ || !frame.input || !frame.output || !frame.motion || !frame.depth) return false;
         if(!ensureSharedResources(frame,status)) return false;
 
-        FrameSlot& slot=slots_[frameIndex_%kFrameSlots];
-        ++frameIndex_;
-        if(slot.completionValue && fence12_->GetCompletedValue()<slot.completionValue) {
-            setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural command ring is busy; bypassing this frame instead of blocking the render thread");
-            return false;
+        const auto completed=completionFence12_->GetCompletedValue();
+        const bool advancedOutput=consumeLatestCompletedOutput(completed);
+        if(cacheValid_ && cache_) {
+            ctx11_->CopyResource(frame.output,cache_.Get());
+            if(!advancedOutput) {
+                ++reusedNeuralFrames_;
+                status.reusedNeuralOutput=1;
+                status.reusedNeuralFrames=reusedNeuralFrames_;
+            }
+        } else {
+            ctx11_->CopyResource(frame.output,frame.input);
         }
+
+        std::array<NeuralSlotState,kFrameSlots> slotState{};
+        for(std::size_t i=0;i<kFrameSlots;++i) slotState[i].completionValue=slots_[i].completionValue;
+        const auto maxSlots=std::clamp<std::uint32_t>(settings.maxFramesInFlight,(std::uint32_t)kInitialFrameSlots,(std::uint32_t)kFrameSlots);
+        if(activeSlotCount_<kInitialFrameSlots) activeSlotCount_=kInitialFrameSlots;
+        if(activeSlotCount_>maxSlots) activeSlotCount_=maxSlots;
+        const auto decision=chooseNeuralSlot(slotState,completed,activeSlotCount_,maxSlots);
+        activeSlotCount_=decision.activeSlots;
+        status.queueCapacity=activeSlotCount_;
+        status.queueLimit=maxSlots;
+        for(std::uint32_t i=0;i<activeSlotCount_;++i)
+            if(slots_[i].completionValue && slots_[i].completionValue>completed) ++status.queueDepth;
+
+        if(decision.backpressured || decision.submitSlot<0) {
+            ++schedulerBackpressureFrames_;
+            status.schedulerBackpressure=1;
+            status.schedulerBackpressureFrames=schedulerBackpressureFrames_;
+            status.neuralPassesExecuted=0;
+            // Queue pressure is not a backend failure. The current Present was
+            // already populated above from the latest completed neural result
+            // (or the source frame during first-result warm-up), so no D3D11
+            // wait on the just-submitted D3D12 work is required.
+            status.failureStage=PipelineStage::None;
+            status.lastResult=1;
+            if(cacheValid_) {
+                markPipelineStage(status.stageMask,PipelineStage::FeatureCreated);
+                wcscpy_s(status.message,L"DLSS 5 queue pressure: presenting latest completed neural output without resetting temporal history");
+            } else {
+                wcscpy_s(status.message,L"DLSS 5 queue warm-up: using the current source frame until the first neural result completes");
+            }
+            return true;
+        }
+
+        FrameSlot& slot=slots_[(std::size_t)decision.submitSlot];
+        if(!ensureSlotResources(slot,frame,status)) return false;
         if(FAILED(slot.allocator->Reset()) || FAILED(slot.list->Reset(slot.allocator.Get(),nullptr))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural command allocator/list reset failed");
             return false;
         }
 
-        // All guide pixels stay GPU-resident. D3D11 writes shared textures, then signals a GPU fence.
-        ctx11_->CopyResource(input_.d11.Get(),frame.input);
-        ctx11_->CopyResource(motion_.d11.Get(),frame.motion);
-        ctx11_->CopyResource(depth_.d11.Get(),frame.depth);
-        if(frame.controlMask && controlMask_.d11) ctx11_->CopyResource(controlMask_.d11.Get(),frame.controlMask);
-        const std::uint64_t readyValue=++fenceValue_;
-        if(FAILED(ctx11v4_->Signal(fence11_.Get(),readyValue))) {
+        // Each in-flight command slot owns its own shared guide/output textures.
+        // This prevents a later D3D11 Present from overwriting resources that a
+        // previous D3D12 Feature-18 evaluation is still consuming.
+        ctx11_->CopyResource(slot.input.d11.Get(),frame.input);
+        ctx11_->CopyResource(slot.motion.d11.Get(),frame.motion);
+        ctx11_->CopyResource(slot.depth.d11.Get(),frame.depth);
+        if(frame.controlMask && slot.controlMask.d11) ctx11_->CopyResource(slot.controlMask.d11.Get(),frame.controlMask);
+        const std::uint64_t readyValue=++producerFenceValue_;
+        if(FAILED(ctx11v4_->Signal(producerFence11_.Get(),readyValue))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D11 shared-fence signal failed");
             return false;
         }
-        // ID3D11DeviceContext4::Signal is ordered on the immediate context,
-        // but explicitly flush the producer batch before making another API
-        // queue wait on that fence. This mirrors the known-good Feature-18
-        // D3D11->D3D12 handoff and avoids a wait on commands still buffered
-        // in the D3D11 runtime.
         ctx11_->Flush();
-        if(FAILED(queue12_->Wait(fence12_.Get(),readyValue))) {
+        if(FAILED(queue12_->Wait(producerFence12_.Get(),readyValue))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 queue wait on D3D11 guide fence failed");
             return false;
         }
 
-        transitionForNgx(slot.list.Get(),true);
-        const bool creatingFeature = feature_ == nullptr;
-        if(!ensureFeature(slot.list.Get(),frame,settings,status)) {
-            slot.list->Close();
-            return false;
-        }
+        transitionInitial(slot,slot.list.Get());
+        const bool creatingFeature=feature_==nullptr;
+        if(!ensureFeature(slot.list.Get(),frame,settings,status)) { slot.list->Close(); return false; }
         if(creatingFeature) {
-            // CreateFeature records one-time initialization work. A known-good
-            // Feature-18 integration submits and completes that work before the
-            // first EvaluateFeature call rather than recording both into the
-            // same never-yet-executed command list. The resources remain in
-            // their NGX read/UAV states across this one-time boundary.
             if(!submitFeatureInitialization(slot,status)) return false;
             if(FAILED(slot.allocator->Reset()) || FAILED(slot.list->Reset(slot.allocator.Get(),nullptr))) {
                 setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 command list reset after feature initialization failed");
@@ -444,70 +481,116 @@ public:
             }
         }
 
-        NVSDK_NGX_Parameter_SetD3d12Resource(params_,kColor,input_.d12.Get());
-        NVSDK_NGX_Parameter_SetD3d12Resource(params_,kOutput,output_.d12.Get());
-        NVSDK_NGX_Parameter_SetD3d12Resource(params_,kMVec,motion_.d12.Get());
-        NVSDK_NGX_Parameter_SetD3d12Resource(params_,kDepth,depth_.d12.Get());
-        NVSDK_NGX_Parameter_SetD3d12Resource(params_,kControlMask,(settings.useControlMask&&frame.controlMask)?controlMask_.d12.Get():nullptr);
-        NVSDK_NGX_Parameter_SetF(params_,kMVecScaleX,frame.motionScaleX);
-        NVSDK_NGX_Parameter_SetF(params_,kMVecScaleY,frame.motionScaleY);
-        NVSDK_NGX_Parameter_SetUI(params_,kDepthInverted,frame.depthInverted?1u:0u);
-        NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertX,0u);
-        NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertY,0u);
-        NVSDK_NGX_Parameter_SetUI(params_,kEnabled,1u);
-        NVSDK_NGX_Parameter_SetUI(params_,kReset,(reset_||frame.resetHistory)?1u:0u);
-        NVSDK_NGX_Parameter_SetUI(params_,kStyle,settings.nrStyle);
-        NVSDK_NGX_Parameter_SetF(params_,kIntensity,settings.nrIntensity);
-        NVSDK_NGX_Parameter_SetF(params_,kLocalTone,settings.nrTone);
-        NVSDK_NGX_Parameter_SetF(params_,kLocalStructure,settings.nrStructure);
-        NVSDK_NGX_Parameter_SetF(params_,kSkinStructure,settings.nrSkinStructure);
-        NVSDK_NGX_Parameter_SetUI(params_,kUseAutoMask,settings.nrAutoMask?1u:0u);
-        NVSDK_NGX_Parameter_SetUI(params_,kUiCorrection,settings.nrUiCorrection?1u:0u);
-        // nrPaperWhite/nrTransferStrength/nrColorStrength are compositor-side
-        // controls only. They are not part of the verified Feature-18 NR
-        // parameter namespace and must not be injected into the NGX block.
-        setSubrectParameters(frame.width,frame.height);
-
-        DWORD exceptionCode=0;
-        const auto result=safeNgxEvaluateFeature(snippetEvaluate_,slot.list.Get(),feature_,params_,exceptionCode);
-        if(exceptionCode) {
-            rememberNgxFailure(createFailure_,NgxFailureStage::EvaluateFeature,0,exceptionCode);
-            setFailure(status,PipelineStage::FeatureEvaluateFailed,static_cast<int>(exceptionCode),formatNgxFailure(createFailure_));
-            slot.list->Close();
-            return false;
+        std::uint32_t requestedPasses=status.neuralPassesRequested;
+        if(requestedPasses>1 && !refinementFeature_ && !refinementUnavailable_) {
+            const bool created=ensureRefinementFeature(slot.list.Get(),frame,settings,status);
+            if(created) {
+                if(!submitFeatureInitialization(slot,status)) return false;
+                if(FAILED(slot.allocator->Reset()) || FAILED(slot.list->Reset(slot.allocator.Get(),nullptr))) {
+                    setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 command list reset after refinement feature initialization failed");
+                    return false;
+                }
+            }
         }
+        if(refinementUnavailable_ || !refinementFeature_) requestedPasses=1;
+
+        auto bindAndEvaluate=[&](NVSDK_NGX_Handle* handle,ID3D12Resource* color,ID3D12Resource* output,bool resetHistory)->NVSDK_NGX_Result {
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kColor,color);
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kOutput,output);
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kMVec,slot.motion.d12.Get());
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kDepth,slot.depth.d12.Get());
+            NVSDK_NGX_Parameter_SetD3d12Resource(params_,kControlMask,(settings.useControlMask&&frame.controlMask)?slot.controlMask.d12.Get():nullptr);
+            NVSDK_NGX_Parameter_SetF(params_,kMVecScaleX,frame.motionScaleX);
+            NVSDK_NGX_Parameter_SetF(params_,kMVecScaleY,frame.motionScaleY);
+            NVSDK_NGX_Parameter_SetUI(params_,kDepthInverted,frame.depthInverted?1u:0u);
+            NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertX,0u);
+            NVSDK_NGX_Parameter_SetUI(params_,kIndicatorInvertY,0u);
+            NVSDK_NGX_Parameter_SetUI(params_,kEnabled,1u);
+            NVSDK_NGX_Parameter_SetUI(params_,kReset,resetHistory?1u:0u);
+            NVSDK_NGX_Parameter_SetUI(params_,kStyle,settings.nrStyle);
+            NVSDK_NGX_Parameter_SetF(params_,kIntensity,settings.nrIntensity);
+            NVSDK_NGX_Parameter_SetF(params_,kLocalTone,settings.nrTone);
+            NVSDK_NGX_Parameter_SetF(params_,kLocalStructure,settings.nrStructure);
+            NVSDK_NGX_Parameter_SetF(params_,kSkinStructure,settings.nrSkinStructure);
+            NVSDK_NGX_Parameter_SetUI(params_,kUseAutoMask,settings.nrAutoMask?1u:0u);
+            NVSDK_NGX_Parameter_SetUI(params_,kUiCorrection,settings.nrUiCorrection?1u:0u);
+            setSubrectParameters(frame.width,frame.height);
+            DWORD exceptionCode=0;
+            const auto result=safeNgxEvaluateFeature(snippetEvaluate_,slot.list.Get(),handle,params_,exceptionCode);
+            if(exceptionCode) return static_cast<NVSDK_NGX_Result>(exceptionCode);
+            return result;
+        };
+
+        auto result=bindAndEvaluate(feature_,slot.input.d12.Get(),slot.output.d12.Get(),reset_||frame.resetHistory);
         if(NVSDK_NGX_FAILED(result)) {
             rememberNgxFailure(createFailure_,NgxFailureStage::EvaluateFeature,static_cast<int>(result),0);
             setFailure(status,PipelineStage::FeatureEvaluateFailed,static_cast<int>(result),formatNgxFailure(createFailure_));
             slot.list->Close();
             return false;
         }
-        markPipelineStage(status.stageMask,PipelineStage::FeatureEvaluated);
         reset_=false;
+        markPipelineStage(status.stageMask,PipelineStage::FeatureEvaluated);
 
-        transitionForNgx(slot.list.Get(),false);
+        ID3D12Resource* finalResource=slot.output.d12.Get();
+        bool finalScratch=false;
+        std::uint32_t executedPasses=1;
+        for(std::uint32_t pass=2;pass<=requestedPasses;++pass) {
+            ID3D12Resource* src=finalResource;
+            ID3D12Resource* dst=finalScratch?slot.output.d12.Get():slot.scratch.d12.Get();
+            transitionRefinement(slot.list.Get(),src,dst,pass>2);
+            const auto refineResult=bindAndEvaluate(refinementFeature_,src,dst,true);
+            if(NVSDK_NGX_FAILED(refineResult)) {
+                refinementUnavailable_=true;
+                refinementFailureResult_=static_cast<int>(refineResult);
+                // Keep the last successful pass. The failed optional refinement
+                // must never disable the primary Feature-18 path.
+                transitionRefinementAbort(slot.list.Get(),src,dst,pass>2);
+                break;
+            }
+            result=refineResult;
+            finalResource=dst;
+            finalScratch=!finalScratch;
+            ++executedPasses;
+        }
+        slot.finalInScratch=finalScratch;
+        transitionFinish(slot,slot.list.Get(),finalScratch,executedPasses>1);
+
         if(FAILED(slot.list->Close())) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural command list close failed");
             return false;
         }
         ID3D12CommandList* lists[]={slot.list.Get()};
         queue12_->ExecuteCommandLists(1,lists);
-        const std::uint64_t doneValue=++fenceValue_;
-        if(FAILED(queue12_->Signal(fence12_.Get(),doneValue))) {
+        const std::uint64_t doneValue=++completionFenceValue_;
+        if(FAILED(queue12_->Signal(completionFence12_.Get(),doneValue))) {
             setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D12 neural completion signal failed");
             return false;
         }
         slot.completionValue=doneValue;
-        if(FAILED(ctx11v4_->Wait(fence11_.Get(),doneValue))) {
-            setFailure(status,PipelineStage::FeatureEvaluateFailed,0,L"D3D11 wait for D3D12 neural output failed");
-            return false;
-        }
-        ctx11_->CopyResource(frame.output,output_.d11.Get());
+        slot.submissionSeq=++submissionSeq_;
+        // Do not wait for this frame's neural result. A later Present consumes
+        // it only after completionFence12_ reports it complete. This keeps the
+        // game queue independent from routine neural latency.
 
         status.failureStage=PipelineStage::None;
         status.lastResult=static_cast<int>(result);
         status.requiredTagCount=4;
-        wcscpy_s(status.message,usingForwarder_?L"Direct in-game DLSS 5 active through signed feature 18 forwarder":L"Direct in-game DLSS 5 active through direct feature 18");
+        status.neuralPassesExecuted=executedPasses;
+        status.schedulerBackpressureFrames=schedulerBackpressureFrames_;
+        status.reusedNeuralFrames=reusedNeuralFrames_;
+        status.queueCapacity=activeSlotCount_;
+        status.queueLimit=maxSlots;
+        status.queueDepth=0;
+        const auto afterCompleted=completionFence12_->GetCompletedValue();
+        for(std::uint32_t i=0;i<activeSlotCount_;++i)
+            if(slots_[i].completionValue && slots_[i].completionValue>afterCompleted) ++status.queueDepth;
+        if(status.neuralPassesRequested>1 && executedPasses==1 && refinementUnavailable_) {
+            swprintf_s(status.message,L"Direct in-game DLSS 5 active; refinement feature unavailable (0x%08X), safely using 1x temporal pass",(unsigned)refinementFailureResult_);
+        } else {
+            swprintf_s(status.message,L"Direct in-game DLSS 5 active through %s; neural passes %u/%u; queue %u/%u",
+                       usingForwarder_?L"signed feature 18 forwarder":L"direct feature 18",
+                       executedPasses,status.neuralPassesRequested,status.queueDepth,status.queueCapacity);
+        }
         return true;
     }
 
@@ -522,19 +605,19 @@ private:
         }
         ID3D12CommandList* lists[]={slot.list.Get()};
         queue12_->ExecuteCommandLists(1,lists);
-        const std::uint64_t value=++fenceValue_;
-        if(FAILED(queue12_->Signal(fence12_.Get(),value))) {
+        const std::uint64_t value=++completionFenceValue_;
+        if(FAILED(queue12_->Signal(completionFence12_.Get(),value))) {
             setFailure(status,PipelineStage::FeatureCreateFailed,0,L"D3D12 feature-initialization completion signal failed");
             return false;
         }
         slot.completionValue=value;
-        if(fence12_->GetCompletedValue()<value) {
+        if(completionFence12_->GetCompletedValue()<value) {
             HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
             if(!event) {
                 setFailure(status,PipelineStage::FeatureCreateFailed,static_cast<int>(GetLastError()),L"Could not create feature-initialization fence event");
                 return false;
             }
-            const HRESULT hr=fence12_->SetEventOnCompletion(value,event);
+            const HRESULT hr=completionFence12_->SetEventOnCompletion(value,event);
             const DWORD wait=SUCCEEDED(hr)?WaitForSingleObject(event,5000):WAIT_FAILED;
             CloseHandle(event);
             if(FAILED(hr) || wait!=WAIT_OBJECT_0) {
@@ -574,19 +657,27 @@ private:
     }
 
     bool createSharedFence(RuntimeStatus& status) {
-        if(FAILED(d12_->CreateFence(0,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&fence12_)))) {
-            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D12 shared fence creation failed");
+        // D3D11 producer readiness and D3D12 neural completion MUST use
+        // independent fence timelines. Reusing one monotonically increasing
+        // value stream across two queues can make a later producer signal look
+        // like an earlier neural completion.
+        if(FAILED(d12_->CreateFence(0,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&producerFence12_)))) {
+            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D12 producer shared fence creation failed");
             return false;
         }
         HANDLE shared=nullptr;
-        if(FAILED(d12_->CreateSharedHandle(fence12_.Get(),nullptr,GENERIC_ALL,nullptr,&shared)) || !shared) {
-            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D12 shared fence handle creation failed");
+        if(FAILED(d12_->CreateSharedHandle(producerFence12_.Get(),nullptr,GENERIC_ALL,nullptr,&shared)) || !shared) {
+            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D12 producer shared fence handle creation failed");
             return false;
         }
-        const HRESULT hr=d11v5_->OpenSharedFence(shared,IID_PPV_ARGS(&fence11_));
+        const HRESULT hr=d11v5_->OpenSharedFence(shared,IID_PPV_ARGS(&producerFence11_));
         CloseHandle(shared);
         if(FAILED(hr)) {
-            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D11 OpenSharedFence failed");
+            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D11 OpenSharedFence for producer readiness failed");
+            return false;
+        }
+        if(FAILED(d12_->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&completionFence12_)))) {
+            setFailure(status,PipelineStage::NeuralD3D12InitFailed,0,L"D3D12 neural completion fence creation failed");
             return false;
         }
         return true;
@@ -634,29 +725,53 @@ private:
         return true;
     }
 
+    bool createCacheTexture(UINT width,UINT height,DXGI_FORMAT format,RuntimeStatus& status) {
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width=width;d.Height=height;d.MipLevels=1;d.ArraySize=1;d.Format=format;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
+        d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
+        if(FAILED(d11_->CreateTexture2D(&d,nullptr,&cache_))) {
+            setFailure(status,PipelineStage::GuideResourcesFailed,0,L"Could not create neural output cache texture");
+            return false;
+        }
+        cacheValid_=false;
+        return true;
+    }
+
     void releaseFeatureAndShared() {
         waitForSubmittedWork();
+        if(refinementFeature_) { safeSnippetRelease(snippetRelease_,refinementFeature_); refinementFeature_=nullptr; }
         if(feature_) { safeSnippetRelease(snippetRelease_,feature_); feature_=nullptr; }
-        input_.reset(); output_.reset(); motion_.reset(); depth_.reset(); controlMask_.reset();
-        width_=height_=0; createAttempted_=false; clearNgxFailure(createFailure_);
+        for(auto& slot:slots_) { slot.resetTextures(); slot.completionValue=0; slot.submissionSeq=0; }
+        cache_.Reset();cacheValid_=false;
+        width_=height_=0;createAttempted_=false;refinementUnavailable_=false;refinementFailureResult_=0;clearNgxFailure(createFailure_);
     }
 
     bool ensureSharedResources(const FrameResources& frame,RuntimeStatus& status) {
-        if(width_==frame.width && height_==frame.height && input_.d12 && output_.d12 && motion_.d12 && depth_.d12 && controlMask_.d12) {
+        if(width_==frame.width && height_==frame.height && cache_) {
             markPipelineStage(status.stageMask,PipelineStage::GuideResourcesReady);
             return true;
         }
         releaseFeatureAndShared();
-        width_=frame.width; height_=frame.height;
-        if(!createSharedTexture(frame.width,frame.height,frame.inputFormat,input_,status) ||
-           !createSharedTexture(frame.width,frame.height,frame.inputFormat,output_,status) ||
-           !createSharedTexture(frame.width,frame.height,frame.motionFormat,motion_,status) ||
-           !createSharedTexture(frame.width,frame.height,frame.depthFormat,depth_,status) ||
-           !createSharedTexture(frame.width,frame.height,frame.controlMaskFormat,controlMask_,status)) {
-            return false;
-        }
+        width_=frame.width;height_=frame.height;
+        if(!createCacheTexture(frame.width,frame.height,frame.inputFormat,status)) return false;
         markPipelineStage(status.stageMask,PipelineStage::GuideResourcesReady);
         return true;
+    }
+
+    bool ensureSlotResources(FrameSlot& slot,const FrameResources& frame,RuntimeStatus& status) {
+        if(slot.input.d12 && slot.input.width==frame.width && slot.input.height==frame.height &&
+           slot.input.format==frame.inputFormat && slot.motion.format==frame.motionFormat && slot.depth.format==frame.depthFormat) return true;
+        if(slot.completionValue && completionFence12_ && completionFence12_->GetCompletedValue()<slot.completionValue) {
+            setFailure(status,PipelineStage::GuideResourcesFailed,0,L"Attempted to recycle an in-flight neural resource slot");
+            return false;
+        }
+        slot.resetTextures();
+        return createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.input,status) &&
+               createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.output,status) &&
+               createSharedTexture(frame.width,frame.height,frame.inputFormat,slot.scratch,status) &&
+               createSharedTexture(frame.width,frame.height,frame.motionFormat,slot.motion,status) &&
+               createSharedTexture(frame.width,frame.height,frame.depthFormat,slot.depth,status) &&
+               createSharedTexture(frame.width,frame.height,frame.controlMaskFormat,slot.controlMask,status);
     }
 
     void fillCreateParameters(UINT width,UINT height,std::uint32_t renderPreset) {
@@ -734,6 +849,23 @@ private:
         return true;
     }
 
+    bool ensureRefinementFeature(ID3D12GraphicsCommandList* list,const FrameResources& frame,const Settings& settings,RuntimeStatus&) {
+        if(refinementFeature_) return true;
+        if(refinementUnavailable_) return false;
+        fillCreateParameters(frame.width,frame.height,settings.nrPreset);
+        DWORD exceptionCode=0;
+        NVSDK_NGX_Handle* candidate=nullptr;
+        const auto result=safeNgxCreateFeature(snippetCreate_,list,params_,&candidate,exceptionCode);
+        if(exceptionCode || NVSDK_NGX_FAILED(result) || !candidate) {
+            if(candidate) safeSnippetRelease(snippetRelease_,candidate);
+            refinementUnavailable_=true;
+            refinementFailureResult_=exceptionCode?static_cast<int>(exceptionCode):static_cast<int>(result);
+            return false;
+        }
+        refinementFeature_=candidate;
+        return true;
+    }
+
     static D3D12_RESOURCE_BARRIER transition(ID3D12Resource* resource,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after) {
         D3D12_RESOURCE_BARRIER b{};
         b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -744,37 +876,89 @@ private:
         return b;
     }
 
-    void transitionForNgx(ID3D12GraphicsCommandList* list,bool intoNgx) {
+    void transitionInitial(FrameSlot& slot,ID3D12GraphicsCommandList* list) {
         const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        std::array<D3D12_RESOURCE_BARRIER,5> b{};
-        if(intoNgx) {
-            b[0]=transition(input_.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
-            b[1]=transition(motion_.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
-            b[2]=transition(depth_.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
-            b[3]=transition(controlMask_.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState);
-            b[4]=transition(output_.d12.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        } else {
-            b[0]=transition(input_.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
-            b[1]=transition(motion_.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
-            b[2]=transition(depth_.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
-            b[3]=transition(controlMask_.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
-            b[4]=transition(output_.d12.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
+        std::array<D3D12_RESOURCE_BARRIER,5> b{
+            transition(slot.input.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
+            transition(slot.motion.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
+            transition(slot.depth.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
+            transition(slot.controlMask.d12.Get(),D3D12_RESOURCE_STATE_COMMON,readState),
+            transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        };
+        list->ResourceBarrier((UINT)b.size(),b.data());
+    }
+
+    void transitionRefinement(ID3D12GraphicsCommandList* list,ID3D12Resource* src,ID3D12Resource* dst,bool dstWasRead) {
+        const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto dstBefore=dstWasRead?readState:D3D12_RESOURCE_STATE_COMMON;
+        std::array<D3D12_RESOURCE_BARRIER,2> b{
+            transition(src,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,readState),
+            transition(dst,dstBefore,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        };
+        list->ResourceBarrier((UINT)b.size(),b.data());
+    }
+
+    void transitionRefinementAbort(ID3D12GraphicsCommandList* list,ID3D12Resource* src,ID3D12Resource* dst,bool dstWasRead) {
+        const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto dstRestore=dstWasRead?readState:D3D12_RESOURCE_STATE_COMMON;
+        std::array<D3D12_RESOURCE_BARRIER,2> b{
+            transition(src,readState,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+            transition(dst,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,dstRestore)
+        };
+        list->ResourceBarrier((UINT)b.size(),b.data());
+    }
+
+    bool consumeLatestCompletedOutput(std::uint64_t completedValue) {
+        FrameSlot* latest=nullptr;
+        for(auto& slot:slots_) {
+            if(!slot.completionValue || slot.completionValue>completedValue || slot.submissionSeq<=consumedSubmissionSeq_) continue;
+            if(!latest || slot.submissionSeq>latest->submissionSeq) latest=&slot;
         }
-        list->ResourceBarrier(static_cast<UINT>(b.size()),b.data());
+        if(!latest || !cache_) return false;
+        ID3D11Texture2D* final11=latest->finalInScratch?latest->scratch.d11.Get():latest->output.d11.Get();
+        if(!final11) return false;
+        // completionFence12_ proves D3D12 has returned this resource to COMMON.
+        // Copy it before any potential reuse of the slot; the subsequent D3D11
+        // producer signal orders this cache copy before D3D12 can overwrite it.
+        ctx11_->CopyResource(cache_.Get(),final11);
+        cacheValid_=true;
+        consumedSubmissionSeq_=latest->submissionSeq;
+        return true;
+    }
+
+    void transitionFinish(FrameSlot& slot,ID3D12GraphicsCommandList* list,bool finalScratch,bool hadRefinement) {
+        const auto readState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        std::array<D3D12_RESOURCE_BARRIER,6> b{};
+        UINT n=0;
+        b[n++]=transition(slot.input.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+        b[n++]=transition(slot.motion.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+        b[n++]=transition(slot.depth.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+        b[n++]=transition(slot.controlMask.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+        if(!hadRefinement) {
+            b[n++]=transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
+        } else if(finalScratch) {
+            b[n++]=transition(slot.output.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+            b[n++]=transition(slot.scratch.d12.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
+        } else {
+            b[n++]=transition(slot.scratch.d12.Get(),readState,D3D12_RESOURCE_STATE_COMMON);
+            b[n++]=transition(slot.output.d12.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
+        }
+        list->ResourceBarrier(n,b.data());
     }
 
     void waitForSubmittedWork() {
         std::uint64_t target=0;
         for(const auto& slot:slots_) target=std::max(target,slot.completionValue);
-        if(!target || !fence12_ || fence12_->GetCompletedValue()>=target) return;
+        if(!target || !completionFence12_ || completionFence12_->GetCompletedValue()>=target) return;
         HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         if(!event) return;
-        if(SUCCEEDED(fence12_->SetEventOnCompletion(target,event))) WaitForSingleObject(event,2000);
+        if(SUCCEEDED(completionFence12_->SetEventOnCompletion(target,event))) WaitForSingleObject(event,2000);
         CloseHandle(event);
     }
 
     void shutdown() {
         waitForSubmittedWork();
+        if(refinementFeature_) { safeSnippetRelease(snippetRelease_,refinementFeature_); refinementFeature_=nullptr; }
         if(feature_) { safeSnippetRelease(snippetRelease_,feature_); feature_=nullptr; }
         if(params_) { NVSDK_NGX_D3D12_DestroyParameters(params_); params_=nullptr; }
         if(snippetInitialized_ && d12_) safeSnippetShutdown(snippetShutdown_,d12_.Get());
@@ -787,12 +971,12 @@ private:
         if(snippetModule_) { FreeLibrary(snippetModule_); snippetModule_=nullptr; }
         if(ngxInitialized_ && d12_) NVSDK_NGX_D3D12_Shutdown1(d12_.Get());
         ngxInitialized_=false;
-        input_.reset(); output_.reset(); motion_.reset(); depth_.reset(); controlMask_.reset();
-        for(auto& slot:slots_) { slot.list.Reset(); slot.allocator.Reset(); slot.completionValue=0; }
-        fence11_.Reset(); fence12_.Reset(); ctx11v4_.Reset(); d11v5_.Reset();
+        for(auto& slot:slots_) { slot.resetTextures(); slot.list.Reset(); slot.allocator.Reset(); slot.completionValue=0; slot.submissionSeq=0; }
+        cache_.Reset();cacheValid_=false;
+        producerFence11_.Reset(); producerFence12_.Reset(); completionFence12_.Reset(); ctx11v4_.Reset(); d11v5_.Reset();
         queue12_.Reset(); d12_.Reset(); ctx11_.Reset(); d11_.Reset();
         initialized_=false; ownsD3D12_=false; reset_=true; createAttempted_=false;
-        width_=height_=0; fenceValue_=0; frameIndex_=0; runtime_.clear(); clearNgxFailure(createFailure_);
+        width_=height_=0; producerFenceValue_=0;completionFenceValue_=0;frameIndex_=0;submissionSeq_=0;consumedSubmissionSeq_=0;schedulerBackpressureFrames_=0;reusedNeuralFrames_=0;activeSlotCount_=kInitialFrameSlots;cacheValid_=false;refinementUnavailable_=false;refinementFailureResult_=0;runtime_.clear(); clearNgxFailure(createFailure_);
     }
 
     ComPtr<ID3D11Device> d11_;
@@ -801,12 +985,14 @@ private:
     ComPtr<ID3D11DeviceContext4> ctx11v4_;
     ComPtr<ID3D12Device> d12_;
     ComPtr<ID3D12CommandQueue> queue12_;
-    ComPtr<ID3D12Fence> fence12_;
-    ComPtr<ID3D11Fence> fence11_;
+    ComPtr<ID3D12Fence> producerFence12_;
+    ComPtr<ID3D11Fence> producerFence11_;
+    ComPtr<ID3D12Fence> completionFence12_;
     std::array<FrameSlot,kFrameSlots> slots_{};
-    SharedTexture input_,output_,motion_,depth_,controlMask_;
+    ComPtr<ID3D11Texture2D> cache_;
     NVSDK_NGX_Parameter* params_{};
     NVSDK_NGX_Handle* feature_{};
+    NVSDK_NGX_Handle* refinementFeature_{};
     HMODULE snippetModule_{};
     SnippetInitExtFn snippetInit_{};
     SnippetPopulateFn snippetPopulate_{};
@@ -822,7 +1008,12 @@ private:
     std::uint32_t snippetVersion_{};
     std::wstring runtime_;
     UINT width_{},height_{};
-    std::uint64_t fenceValue_{},frameIndex_{};
+    std::uint64_t producerFenceValue_{},completionFenceValue_{},frameIndex_{},submissionSeq_{},consumedSubmissionSeq_{};
+    std::uint64_t schedulerBackpressureFrames_{},reusedNeuralFrames_{};
+    std::uint32_t activeSlotCount_{kInitialFrameSlots};
+    bool cacheValid_{};
+    bool refinementUnavailable_{};
+    std::int32_t refinementFailureResult_{};
     bool initialized_{};
     bool ngxInitialized_{};
     bool snippetInitialized_{};

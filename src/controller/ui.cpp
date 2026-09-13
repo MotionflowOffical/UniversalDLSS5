@@ -5,6 +5,7 @@
 #include "udlss/profile.hpp"
 #include "udlss/runtime_policy.hpp"
 #include "udlss/runtime_diagnostics.hpp"
+#include "udlss/renderer_selection_policy.hpp"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -17,6 +18,11 @@
 #include <unordered_set>
 #include <cwctype>
 #include <array>
+#include <mutex>
+#include <thread>
+#include <chrono>
+#include <dwmapi.h>
+#include <uxtheme.h>
 
 #pragma comment(lib,"comctl32.lib")
 namespace fs = std::filesystem;
@@ -31,7 +37,7 @@ enum : int {
     IDC_BACKEND, IDC_MOTION, IDC_LATENCY, IDC_DOWNSAMPLE, IDC_PRESET,
     IDC_SHOW_ALL, IDC_RETRY_NEURAL, IDC_PROCESS_DETAIL, IDC_DIAGNOSTICS, IDC_COPY_DIAGNOSTICS, IDC_SAVE_DIAGNOSTICS, IDC_BADGE, IDC_TABS, IDC_DOWNSAMPLE_LABEL, IDC_ADVANCED_NOTE,
     IDC_NR_STYLE, IDC_NR_PRESET, IDC_DEPTH_MODE, IDC_DEBUG_VIEW, IDC_AUTO_MASK, IDC_UI_CORRECTION, IDC_RESET_GAP, IDC_GAME_DEPTH, IDC_GAME_ADAPTER,
-    IDC_NR_STYLE_LABEL, IDC_NR_PRESET_LABEL, IDC_DEPTH_MODE_LABEL, IDC_DEBUG_VIEW_LABEL, IDC_DEBUG_NOTE,
+    IDC_NR_STYLE_LABEL, IDC_NR_PRESET_LABEL, IDC_DEPTH_MODE_LABEL, IDC_DEBUG_VIEW_LABEL, IDC_DEBUG_NOTE, IDC_NR_PASSES, IDC_NR_PASSES_LABEL, IDC_THEME, IDC_THEME_LABEL,
     IDC_SHARP=200, IDC_EXPOSURE, IDC_TEMPORAL, IDC_MOTIONSCALE, IDC_CONF, IDC_DISOCC,
     IDC_TEXT, IDC_UIP, IDC_MASKSTR, IDC_CLAMP, IDC_REACTIVE, IDC_EDGE, IDC_RADIUS,
     IDC_NR_INTENSITY, IDC_NR_TONE, IDC_NR_STRUCTURE, IDC_NR_SKIN, IDC_NR_PAPER, IDC_NR_TRANSFER, IDC_NR_COLOR,
@@ -88,12 +94,20 @@ struct State {
     HINSTANCE inst{};
     HWND hwnd{}, process{}, processCombo{}, processDetail{}, runtime{}, status{}, backend{}, motion{}, latency{}, downsample{}, preset{}, nrStyle{}, nrPreset{}, depthMode{}, debugView{};
     HWND diagnostics{}, badge{}, tabs{}, applicationGroup{}, neuralGroup{}, settingsGroup{}, diagnosticsGroup{};
-    HWND copyDiagnostics{}, saveDiagnostics{};
+    HWND copyDiagnostics{}, saveDiagnostics{}, nrPasses{}, theme{};
     HIMAGELIST processImages{};
-    HFONT font{};
-    HBRUSH activeBrush{}, passthroughBrush{}, waitingBrush{}, errorBrush{};
+    HFONT font{}, headingFont{};
+    HBRUSH activeBrush{}, passthroughBrush{}, waitingBrush{}, errorBrush{}, backgroundBrush{}, surfaceBrush{}, inputBrush{};
+    COLORREF backgroundColor{RGB(246,247,249)},surfaceColor{RGB(255,255,255)},inputColor{RGB(250,251,252)},textColor{RGB(30,33,38)},mutedTextColor{RGB(96,103,113)},borderColor{RGB(218,222,229)},accentColor{RGB(49,111,236)};
     std::vector<PickerEntry> entries;
     std::unordered_set<DWORD> injected;
+    std::mutex injectedMutex;
+    std::jthread maintenanceThread;
+    std::mutex maintenanceMutex;
+    ProcessInfo maintenanceRoot{};
+    bool maintenanceEnabled{};
+    bool maintenanceFollowTree{true};
+    DWORD primaryRendererPid{};
     DWORD rootPid{};
     std::wstring rootPath;
     std::wstring appDir;
@@ -103,6 +117,7 @@ struct State {
     BadgeState badgeState{BadgeState::Waiting};
     bool profileDirty{};
     bool showAllProcesses{};
+    bool darkTheme{};
 } g;
 
 std::wstring applicationDirectory() {
@@ -125,9 +140,115 @@ std::wstring profilePath(const std::wstring& exe) {
     return (fs::path(n ? std::wstring(base,n) : g.appDir) / L"UniversalDLSS5" / L"profiles" / (name.str()+L".ini")).wstring();
 }
 
+
+bool systemPrefersDark() {
+    DWORD value=1,size=sizeof(value);
+    if(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&value,&size)==ERROR_SUCCESS)
+        return value==0;
+    return false;
+}
+
+bool resolvedDarkTheme() {
+    if(g.settings.uiTheme==UiTheme::Dark) return true;
+    if(g.settings.uiTheme==UiTheme::Light) return false;
+    return systemPrefersDark();
+}
+
+void setWindowTextIfChanged(HWND h,const std::wstring& text) {
+    if(!h) return;
+    const int len=GetWindowTextLengthW(h);
+    std::wstring current((std::size_t)std::max(0,len)+1,L'\0');
+    if(len>0) GetWindowTextW(h,current.data(),len+1);
+    current.resize(wcslen(current.c_str()));
+    if(current!=text) SetWindowTextW(h,text.c_str());
+}
+
+void rebuildThemeBrushes() {
+    if(g.backgroundBrush) DeleteObject(g.backgroundBrush);
+    if(g.surfaceBrush) DeleteObject(g.surfaceBrush);
+    if(g.inputBrush) DeleteObject(g.inputBrush);
+    if(g.darkTheme) {
+        g.backgroundColor=RGB(16,18,21);g.surfaceColor=RGB(25,28,33);g.inputColor=RGB(31,34,40);
+        g.textColor=RGB(235,238,242);g.mutedTextColor=RGB(159,165,176);g.borderColor=RGB(54,59,68);g.accentColor=RGB(66,133,244);
+    } else {
+        g.backgroundColor=RGB(246,247,249);g.surfaceColor=RGB(255,255,255);g.inputColor=RGB(250,251,252);
+        g.textColor=RGB(30,33,38);g.mutedTextColor=RGB(96,103,113);g.borderColor=RGB(218,222,229);g.accentColor=RGB(49,111,236);
+    }
+    g.backgroundBrush=CreateSolidBrush(g.backgroundColor);
+    g.surfaceBrush=CreateSolidBrush(g.surfaceColor);
+    g.inputBrush=CreateSolidBrush(g.inputColor);
+}
+
+void applyControlTheme(HWND h) {
+    if(!h) return;
+    SetWindowTheme(h,g.darkTheme?L"DarkMode_Explorer":L"Explorer",nullptr);
+    InvalidateRect(h,nullptr,TRUE);
+}
+BOOL CALLBACK themeChildProc(HWND h,LPARAM){applyControlTheme(h);return TRUE;}
+
+void applyTheme() {
+    g.darkTheme=resolvedDarkTheme();
+    rebuildThemeBrushes();
+    if(g.hwnd) {
+        const BOOL dark=g.darkTheme?TRUE:FALSE;
+        if(FAILED(DwmSetWindowAttribute(g.hwnd,20,&dark,sizeof(dark)))) DwmSetWindowAttribute(g.hwnd,19,&dark,sizeof(dark));
+        EnumChildWindows(g.hwnd,themeChildProc,0);
+        InvalidateRect(g.hwnd,nullptr,TRUE);
+    }
+}
+
+bool isAccentButton(int id){return id==IDC_ATTACH || id==IDC_RETRY_NEURAL;}
+void drawModernButton(const DRAWITEMSTRUCT& di) {
+    RECT r=di.rcItem;
+    const bool disabled=(di.itemState&ODS_DISABLED)!=0;
+    const bool pressed=(di.itemState&ODS_SELECTED)!=0;
+    COLORREF fill=isAccentButton((int)di.CtlID)?g.accentColor:g.inputColor;
+    if(pressed&&isAccentButton((int)di.CtlID)) fill=RGB(GetRValue(fill)*4/5,GetGValue(fill)*4/5,GetBValue(fill)*4/5);
+    else if(pressed) fill=g.darkTheme?RGB(43,47,55):RGB(232,235,240);
+    HBRUSH b=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,isAccentButton((int)di.CtlID)?fill:g.borderColor);
+    HGDIOBJ oldB=SelectObject(di.hDC,b),oldP=SelectObject(di.hDC,pen);
+    RoundRect(di.hDC,r.left,r.top,r.right,r.bottom,10,10);
+    SelectObject(di.hDC,oldP);SelectObject(di.hDC,oldB);DeleteObject(pen);DeleteObject(b);
+    wchar_t text[256]{};GetWindowTextW(di.hwndItem,text,_countof(text));
+    SetBkMode(di.hDC,TRANSPARENT);SetTextColor(di.hDC,disabled?g.mutedTextColor:(isAccentButton((int)di.CtlID)?RGB(255,255,255):g.textColor));
+    if(g.font) SelectObject(di.hDC,g.font);
+    DrawTextW(di.hDC,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+    if(di.itemState&ODS_FOCUS){RECT f=r;InflateRect(&f,-3,-3);DrawFocusRect(di.hDC,&f);}
+}
+
+void drawModernTab(const DRAWITEMSTRUCT& di) {
+    RECT r=di.rcItem;FillRect(di.hDC,&r,g.surfaceBrush);
+    const bool selected=(int)di.itemID==TabCtrl_GetCurSel(g.tabs);
+    RECT pill=r;InflateRect(&pill,-3,-3);
+    if(selected){
+        HBRUSH fill=CreateSolidBrush(g.inputColor);HPEN border=CreatePen(PS_SOLID,1,g.borderColor);
+        HGDIOBJ oldB=SelectObject(di.hDC,fill),oldP=SelectObject(di.hDC,border);
+        RoundRect(di.hDC,pill.left,pill.top,pill.right,pill.bottom,10,10);
+        SelectObject(di.hDC,oldP);SelectObject(di.hDC,oldB);DeleteObject(border);DeleteObject(fill);
+        HPEN accent=CreatePen(PS_SOLID,3,g.accentColor);oldP=SelectObject(di.hDC,accent);
+        MoveToEx(di.hDC,pill.left+12,pill.bottom-2,nullptr);LineTo(di.hDC,pill.right-12,pill.bottom-2);
+        SelectObject(di.hDC,oldP);DeleteObject(accent);
+    }
+    wchar_t text[96]{};TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=text;item.cchTextMax=_countof(text);TabCtrl_GetItem(g.tabs,(int)di.itemID,&item);
+    SetBkMode(di.hDC,TRANSPARENT);SetTextColor(di.hDC,selected?g.textColor:g.mutedTextColor);if(g.font)SelectObject(di.hDC,g.font);
+    DrawTextW(di.hDC,text,-1,&pill,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+}
+
+void paintCards(HDC dc) {
+    RECT client{};GetClientRect(g.hwnd,&client);FillRect(dc,&client,g.backgroundBrush?g.backgroundBrush:(HBRUSH)(COLOR_WINDOW+1));
+    const int cw=client.right-client.left,ch=client.bottom-client.top;
+    const int leftW=650,mainY=226,mainH=std::max(400,ch-mainY-12),diagX=leftW+24,diagW=std::max(420,cw-diagX-12);
+    const RECT cards[]={{12,10,cw-12,108},{12,114,cw-12,218},{12,mainY,12+leftW,mainY+mainH},{diagX,mainY,diagX+diagW,mainY+mainH}};
+    HBRUSH fill=g.surfaceBrush?g.surfaceBrush:(HBRUSH)(COLOR_WINDOW+1);HPEN pen=CreatePen(PS_SOLID,1,g.borderColor);
+    HGDIOBJ oldB=SelectObject(dc,fill),oldP=SelectObject(dc,pen);for(const auto&r:cards)RoundRect(dc,r.left,r.top,r.right,r.bottom,14,14);
+    SelectObject(dc,oldP);SelectObject(dc,oldB);DeleteObject(pen);
+}
+
 HWND makeControlEx(DWORD ex,const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,int h,int id) {
+    if(_wcsicmp(cls,L"BUTTON")==0 && (style&0x0Fu)==BS_PUSHBUTTON) style=(style&~0x0Fu)|BS_OWNERDRAW;
     HWND control=CreateWindowExW(ex,cls,text,WS_CHILD|WS_VISIBLE|style,x,y,w,h,g.hwnd,(HMENU)(INT_PTR)id,g.inst,nullptr);
     if(control && g.font) SendMessageW(control,WM_SETFONT,(WPARAM)g.font,TRUE);
+    if(control) applyControlTheme(control);
     return control;
 }
 HWND makeControl(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,int h,int id) {
@@ -183,6 +304,7 @@ void updateSliderCaptions() {
 }
 
 void markCustomPreset() { if (g.preset) SendMessageW(g.preset,CB_SETCURSEL,5,0); }
+void applyTheme();
 
 void readControls(bool fromSlider=false) {
     g.settings.enabled = IsDlgButtonChecked(g.hwnd,IDC_ENABLE)==BST_CHECKED;
@@ -206,6 +328,8 @@ void readControls(bool fromSlider=false) {
     g.settings.nrPreset = (std::uint32_t)std::max<LRESULT>(0,SendMessageW(g.nrPreset,CB_GETCURSEL,0,0));
     g.settings.depthMode = (DepthGuideMode)std::max<LRESULT>(0,SendMessageW(g.depthMode,CB_GETCURSEL,0,0));
     g.settings.debugView = (DebugView)std::max<LRESULT>(0,SendMessageW(g.debugView,CB_GETCURSEL,0,0));
+    if(g.nrPasses) g.settings.nrPasses=1u+(std::uint32_t)std::max<LRESULT>(0,SendMessageW(g.nrPasses,CB_GETCURSEL,0,0));
+    if(g.theme) g.settings.uiTheme=(UiTheme)std::max<LRESULT>(0,SendMessageW(g.theme,CB_GETCURSEL,0,0));
     const int downsample=(int)SendMessageW(g.downsample,CB_GETCURSEL,0,0);
     g.settings.flowDownsample=1u<<std::clamp(downsample,0,3);
 
@@ -244,6 +368,8 @@ void applyControls() {
     SendMessageW(g.motion,CB_SETCURSEL,(WPARAM)g.settings.motionSource,0);
     SendMessageW(g.latency,CB_SETCURSEL,(WPARAM)g.settings.latencyMode,0);
     SendMessageW(g.nrStyle,CB_SETCURSEL,(WPARAM)g.settings.nrStyle,0);SendMessageW(g.nrPreset,CB_SETCURSEL,(WPARAM)g.settings.nrPreset,0);SendMessageW(g.depthMode,CB_SETCURSEL,(WPARAM)g.settings.depthMode,0);SendMessageW(g.debugView,CB_SETCURSEL,(WPARAM)g.settings.debugView,0);
+    if(g.nrPasses) SendMessageW(g.nrPasses,CB_SETCURSEL,(WPARAM)(std::clamp<std::uint32_t>(g.settings.nrPasses,1,4)-1),0);
+    if(g.theme) SendMessageW(g.theme,CB_SETCURSEL,(WPARAM)g.settings.uiTheme,0);
     int d=0; for(auto x=g.settings.flowDownsample;x>1;x>>=1) ++d;
     SendMessageW(g.downsample,CB_SETCURSEL,d,0);
 
@@ -335,6 +461,7 @@ void selectChanged() {
         Settings s;
         g.settings=loadProfileFile(profilePath(g.rootPath),s)?s:defaultSettings();
         applyControls();
+        applyTheme();
         SendMessageW(g.preset,CB_SETCURSEL,5,0);
         writeLive(false);
     }
@@ -343,8 +470,9 @@ void selectChanged() {
 
 PickerEntry* selectedEntry();
 std::wstring runtimeFolderFromUi();
+std::unordered_set<DWORD> injectedSnapshot();
 
-void setStatusText(const std::wstring& text) { if(g.status) SetWindowTextW(g.status,text.c_str()); }
+void setStatusText(const std::wstring& text) { if(g.status) setWindowTextIfChanged(g.status,text); }
 
 const wchar_t* badgeText(BadgeState state) {
     switch(state){
@@ -406,6 +534,7 @@ std::wstring buildDiagnosticReport(const RuntimeStatus& s) {
     out<<L"Application: "<<selectedApplicationName()<<L"\r\n";
     out<<L"Root PID: "<<g.rootPid<<L"\r\n";
     out<<L"Bridge PID: "<<s.pid<<L"\r\n";
+    out<<L"Primary renderer PID: "<<(g.primaryRendererPid?g.primaryRendererPid:s.pid)<<L"\r\n";
     out<<L"State: "<<runtimeStateText(s.state)<<L"\r\n";
     out<<L"Source API: "<<graphicsApiText(s.api)<<L"\r\n";
     out<<L"Neural API: "<<neuralApiText(s.neuralApi)<<L"\r\n";
@@ -418,6 +547,9 @@ std::wstring buildDiagnosticReport(const RuntimeStatus& s) {
     out<<L"Neural active this frame: "<<(s.neuralActive?L"YES":L"NO")<<L"\r\n";
     out<<L"Estimated FPS: "<<std::fixed<<std::setprecision(1)<<s.estimatedFps<<L"\r\n";
     out<<L"Submit time: "<<std::fixed<<std::setprecision(2)<<s.lastGpuMs<<L" ms\r\n";
+    if(s.queueCapacity) out<<L"Neural queue: "<<s.queueDepth<<L" / "<<s.queueCapacity<<L" active slots (limit "<<s.queueLimit<<L")\r\n";
+    out<<L"Neural passes: requested="<<s.neuralPassesRequested<<L", executed="<<s.neuralPassesExecuted<<L"\r\n";
+    if(s.schedulerBackpressureFrames||s.reusedNeuralFrames) out<<L"Scheduler: pressure="<<s.schedulerBackpressureFrames<<L", reused="<<s.reusedNeuralFrames<<L", reused this frame="<<(s.reusedNeuralOutput?L"YES":L"NO")<<L"\r\n";
     if(s.flowName[0]) out<<L"Motion path: "<<s.flowName<<L"\r\n";
     if(s.nativeMotionCandidateId || s.nativeMotionCandidateScore)
         out<<L"Native motion candidate: id="<<s.nativeMotionCandidateId<<L", score="<<s.nativeMotionCandidateScore<<L"\r\n";
@@ -449,10 +581,11 @@ std::wstring buildDiagnosticReport(const RuntimeStatus& s) {
     if(s.failureStage!=PipelineStage::None) out<<L"Failure stage: "<<pipelineStageLabel(s.failureStage)<<L"\r\n";
     out<<L"\r\nPipeline stages\r\n---------------\r\n"<<formatPipelineStages(s.stageMask,s.failureStage)<<L"\r\n";
     out<<L"\r\nBackend message\r\n---------------\r\n"<<(s.message[0]?s.message:L"(none)")<<L"\r\n";
-    if(!g.injected.empty()){
+    const auto injected=injectedSnapshot();
+    if(!injected.empty()){
         out<<L"\r\nInjected PIDs: ";
         bool first=true;
-        for(DWORD pid:g.injected){if(!first)out<<L", ";first=false;out<<pid;}
+        for(DWORD pid:injected){if(!first)out<<L", ";first=false;out<<pid;}
         out<<L"\r\n";
     }
     return out.str();
@@ -529,74 +662,135 @@ bool validateRuntimeForAttach(bool showOk) {
     return true;
 }
 
-std::vector<ProcessInfo> attachTargets(const ProcessInfo& root) {
-    if(!g.settings.attachProcessTree) return {root};
+std::vector<ProcessInfo> attachTargetsFor(const ProcessInfo& root,bool followTree) {
+    if(!followTree) return {root};
     auto tree=processTree(root.pid);
     std::vector<ProcessInfo> out;
     out.reserve(tree.size());
-    for(const auto& p:tree) {
-        // App-centric selection follows the tree, but only the root and graphics children
-        // are injection candidates. This avoids renderer/helper duplication in the UI.
-        if(p.pid==root.pid || p.hasDxgi) out.push_back(p);
-    }
+    for(const auto& p:tree) if(p.pid==root.pid || p.hasDxgi) out.push_back(p);
     return out;
 }
 
+std::unordered_set<DWORD> injectedSnapshot() {
+    std::scoped_lock lock(g.injectedMutex);
+    return g.injected;
+}
+void clearInjectedTracking() {
+    std::scoped_lock lock(g.injectedMutex);
+    g.injected.clear();
+}
 void pruneInjected() {
     std::unordered_set<DWORD> alive;
     for(const auto& p:enumerateProcesses()) alive.insert(p.pid);
+    std::scoped_lock lock(g.injectedMutex);
     for(auto it=g.injected.begin();it!=g.injected.end();) {
         if(!alive.contains(*it)) it=g.injected.erase(it); else ++it;
     }
 }
 
-void injectCurrentTree(bool report=true) {
-    auto* p=selected();
-    if(!p) return;
-    if(report) readControls(false);
-    if(!validateRuntimeForAttach(report)) return;
-    g.rootPid=p->pid;
-    g.rootPath=p->path;
-    g.shared.raw()->rootPid=g.rootPid;
-    wchar_t runtime[512]{};
-    GetWindowTextW(g.runtime,runtime,_countof(runtime));
-    g.shared.setRuntimePath(runtime);
-    g.shared.requestUnload(false);
-    pruneInjected();
-
-    const auto targets=attachTargets(*p);
-    int ok=0,fail=0;
-    std::wstring last;
+struct AttachPassResult { int loaded{};int failed{};std::wstring lastError; };
+AttachPassResult injectTargetsOnce(const ProcessInfo& root,bool followTree,bool prune=true) {
+    AttachPassResult result{};
+    if(prune) pruneInjected();
+    const auto targets=attachTargetsFor(root,followTree);
     for(const auto& target:targets) {
-        if(g.injected.contains(target.pid)) continue;
+        bool reserved=false;
+        {
+            std::scoped_lock lock(g.injectedMutex);
+            if(!g.injected.contains(target.pid)){g.injected.insert(target.pid);reserved=true;}
+        }
+        if(!reserved) continue;
         std::wstring message;
-        if(injectBridge(target,g.appDir,message)) { g.injected.insert(target.pid); ++ok; }
-        else { ++fail; last=target.name+L": "+message; }
+        if(injectBridge(target,g.appDir,message)) ++result.loaded;
+        else {
+            {std::scoped_lock lock(g.injectedMutex);g.injected.erase(target.pid);}
+            ++result.failed;result.lastError=target.name+L": "+message;
+        }
     }
-    if(report) setStatusText(L"Attach pass: "+std::to_wstring(ok)+L" loaded, "+std::to_wstring(fail)+L" skipped/failed. "+last);
+    return result;
+}
+
+void configureMaintenance(const ProcessInfo& root,bool enabled) {
+    std::scoped_lock lock(g.maintenanceMutex);
+    g.maintenanceRoot=root;g.maintenanceEnabled=enabled;g.maintenanceFollowTree=g.settings.attachProcessTree;
+}
+
+void maintenanceLoop(std::stop_token stop) {
+    unsigned cycle=0;
+    while(!stop.stop_requested()) {
+        ProcessInfo root{};bool enabled=false,follow=false;
+        {
+            std::scoped_lock lock(g.maintenanceMutex);
+            root=g.maintenanceRoot;enabled=g.maintenanceEnabled;follow=g.maintenanceFollowTree;
+        }
+        if(enabled&&root.pid) {
+            // Full process pruning is more expensive than tree discovery; keep
+            // both completely off the UI thread and prune only every ~16 s.
+            injectTargetsOnce(root,follow,(cycle%4u)==0u);
+            ++cycle;
+        }
+        for(int i=0;i<40&&!stop.stop_requested();++i) Sleep(100);
+    }
+}
+
+void injectCurrentTree(bool report=true) {
+    auto* p=selected();if(!p)return;
+    if(report)readControls(false);
+    if(!validateRuntimeForAttach(report))return;
+    g.rootPid=p->pid;g.rootPath=p->path;g.shared.raw()->rootPid=g.rootPid;
+    wchar_t runtime[512]{};GetWindowTextW(g.runtime,runtime,_countof(runtime));g.shared.setRuntimePath(runtime);g.shared.requestUnload(false);
+    // Give all candidate bridges a short discovery window; poll() will elect
+    // exactly one renderer and publish it back to the process tree.
+    g.primaryRendererPid=0;g.shared.setPrimaryRendererPid(0);
+    configureMaintenance(*p,true);
+    const auto result=injectTargetsOnce(*p,g.settings.attachProcessTree,true);
+    if(report) setStatusText(L"Attach pass: "+std::to_wstring(result.loaded)+L" loaded, "+std::to_wstring(result.failed)+L" skipped/failed. "+result.lastError);
+}
+
+RuntimeStatus electedStatus(const std::array<RuntimeStatus,32>& statuses,std::uint32_t pid) {
+    RuntimeStatus newest{};
+    for(const auto& st:statuses) {
+        if(pid && st.pid==pid) return st;
+        if(!pid && st.pid && st.lastTickMs>=newest.lastTickMs) newest=st;
+    }
+    return newest;
 }
 
 void poll() {
-    if(g.rootPid && g.settings.attachProcessTree) injectCurrentTree(false);
     saveProfileIfDirty();
-    const auto s=g.shared.readStatus();
-    if(!s.pid) { setBadge(BadgeState::Waiting); return; }
+    const auto statuses=g.shared.readStatuses();
+    const auto now=GetTickCount64();
+    std::array<RendererCandidate,32> candidates{};
+    std::size_t count=0;
+    const auto injected=injectedSnapshot();
+    for(const auto& st:statuses) {
+        if(!st.pid) continue;
+        if(!injected.empty() && !injected.contains(st.pid) && st.pid!=g.rootPid) continue;
+        candidates[count++]={st.pid,st.width,st.height,(std::uint32_t)st.api,st.estimatedFps,st.lastTickMs,st.pid==g.rootPid,st.neuralActive!=0,st.state==RuntimeState::Processing};
+    }
+    const auto elected=electPrimaryRenderer(std::span<const RendererCandidate>(candidates.data(),count),g.primaryRendererPid,now);
+    if(elected!=g.primaryRendererPid) {
+        const auto old=g.primaryRendererPid;g.primaryRendererPid=elected;g.shared.setPrimaryRendererPid(elected);
+        if(old&&elected&&old!=elected) g.shared.requestHistoryReset();
+    }
+    const auto st=electedStatus(statuses,g.primaryRendererPid);
+    if(!st.pid){setBadge(BadgeState::Waiting);return;}
 
     BadgeState visual=BadgeState::Waiting;
-    if(s.neuralActive) visual=BadgeState::Active;
-    else if(s.state==RuntimeState::Error || s.failureStage!=PipelineStage::None) visual=BadgeState::Error;
-    else if(s.state==RuntimeState::Bypassed) visual=BadgeState::Passthrough;
+    if(st.neuralActive)visual=BadgeState::Active;
+    else if(st.state==RuntimeState::Error||st.failureStage!=PipelineStage::None)visual=BadgeState::Error;
+    else if(st.state==RuntimeState::Bypassed)visual=BadgeState::Passthrough;
     setBadge(visual);
 
     std::wstringstream summary;
-    summary<<graphicsApiText(s.api)<<L" -> "<<neuralApiText(s.neuralApi)
-           <<L" · neural "<<s.neuralFrames<<L"/"<<s.presentedFrames
-           <<L" · "<<s.width<<L"x"<<s.height;
-    if(s.message[0]) summary<<L" · "<<s.message;
+    summary<<graphicsApiText(st.api)<<L" -> "<<neuralApiText(st.neuralApi)<<L" · neural "<<st.neuralFrames<<L"/"<<st.presentedFrames<<L" · "<<st.width<<L"x"<<st.height;
+    if(st.queueCapacity) summary<<L" · queue "<<st.queueDepth<<L"/"<<st.queueCapacity;
+    if(st.neuralPassesRequested) summary<<L" · "<<st.neuralPassesExecuted<<L"/"<<st.neuralPassesRequested<<L" pass";
+    if(st.message[0])summary<<L" · "<<st.message;
     setStatusText(summary.str());
 
-    g.lastDiagnostic=buildDiagnosticReport(s);
-    if(g.diagnostics) SetWindowTextW(g.diagnostics,g.lastDiagnostic.c_str());
+    const auto diagnostic=buildDiagnosticReport(st);
+    if(diagnostic!=g.lastDiagnostic){g.lastDiagnostic=diagnostic;if(g.diagnostics)setWindowTextIfChanged(g.diagnostics,g.lastDiagnostic);}
 }
 
 std::wstring pickFolder(HWND owner) {
@@ -633,7 +827,7 @@ bool isSettingsControl(int id) {
     case IDC_ENABLE: case IDC_TREE: case IDC_UI_PROTECT: case IDC_CTRL_MASK: case IDC_INVERT_Y:
     case IDC_SECONDARY: case IDC_ON12: case IDC_UNSUPPORTED: case IDC_BACKEND: case IDC_MOTION:
     case IDC_LATENCY: case IDC_DOWNSAMPLE: case IDC_NR_STYLE: case IDC_NR_PRESET: case IDC_DEPTH_MODE: case IDC_DEBUG_VIEW:
-    case IDC_AUTO_MASK: case IDC_UI_CORRECTION: case IDC_RESET_GAP: case IDC_GAME_DEPTH: case IDC_GAME_ADAPTER: return true;
+    case IDC_AUTO_MASK: case IDC_UI_CORRECTION: case IDC_RESET_GAP: case IDC_GAME_DEPTH: case IDC_GAME_ADAPTER: case IDC_NR_PASSES: case IDC_THEME: return true;
     default: return false;
     }
 }
@@ -660,10 +854,10 @@ void showSettingsTab(int index) {
     for(int id:temporal) showSliderId(id,index==1);
     for(int id:composition) showSliderId(id,index==2);
     showSliderId(IDC_DEBUG_SPLIT,index==3);
-    for(int id:{IDC_NR_STYLE,IDC_NR_PRESET,IDC_AUTO_MASK,IDC_UI_CORRECTION,IDC_NR_STYLE_LABEL,IDC_NR_PRESET_LABEL}) showControlId(id,index==0);
+    for(int id:{IDC_NR_STYLE,IDC_NR_PRESET,IDC_AUTO_MASK,IDC_UI_CORRECTION,IDC_NR_STYLE_LABEL,IDC_NR_PRESET_LABEL,IDC_NR_PASSES,IDC_NR_PASSES_LABEL}) showControlId(id,index==0);
     for(int id:{IDC_INVERT_Y,IDC_DOWNSAMPLE,IDC_DOWNSAMPLE_LABEL,IDC_DEPTH_MODE,IDC_DEPTH_MODE_LABEL,IDC_RESET_GAP,IDC_GAME_DEPTH,IDC_GAME_ADAPTER}) showControlId(id,index==1);
     for(int id:{IDC_DEBUG_VIEW,IDC_DEBUG_VIEW_LABEL,IDC_DEBUG_NOTE}) showControlId(id,index==3);
-    for(int id:{IDC_TREE,IDC_ON12,IDC_SECONDARY,IDC_ADVANCED_NOTE,IDC_UNSUPPORTED}) showControlId(id,index==4);
+    for(int id:{IDC_TREE,IDC_ON12,IDC_SECONDARY,IDC_ADVANCED_NOTE,IDC_UNSUPPORTED,IDC_THEME,IDC_THEME_LABEL}) showControlId(id,index==4);
 }
 
 void layoutUi() {
@@ -677,10 +871,10 @@ void layoutUi() {
     const int diagX=leftW+24;
     const int diagW=std::max(420,cw-diagX-12);
 
-    if(g.applicationGroup) MoveWindow(g.applicationGroup,12,10,cw-24,98,TRUE);
-    if(g.neuralGroup) MoveWindow(g.neuralGroup,12,114,cw-24,104,TRUE);
-    if(g.settingsGroup) MoveWindow(g.settingsGroup,12,mainY,leftW,mainH,TRUE);
-    if(g.diagnosticsGroup) MoveWindow(g.diagnosticsGroup,diagX,mainY,diagW,mainH,TRUE);
+    if(g.applicationGroup) MoveWindow(g.applicationGroup,28,16,220,22,TRUE);
+    if(g.neuralGroup) MoveWindow(g.neuralGroup,28,120,220,22,TRUE);
+    if(g.settingsGroup) MoveWindow(g.settingsGroup,28,232,220,22,TRUE);
+    if(g.diagnosticsGroup) MoveWindow(g.diagnosticsGroup,diagX+16,232,220,22,TRUE);
     if(g.tabs) MoveWindow(g.tabs,28,306,leftW-32,mainH-94,TRUE);
     if(g.diagnostics) MoveWindow(g.diagnostics,diagX+16,mainY+34,diagW-32,mainH-84,TRUE);
     if(g.copyDiagnostics) MoveWindow(g.copyDiagnostics,diagX+16,mainY+mainH-40,130,28,TRUE);
@@ -700,13 +894,15 @@ void createSlider(int id,int col,int row) {
 }
 
 void makeUi() {
-    g.font=CreateFontW(-16,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI");
+    g.font=CreateFontW(-16,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI Variable");
+    g.headingFont=CreateFontW(-17,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI Variable Display");
+    g.darkTheme=resolvedDarkTheme();rebuildThemeBrushes();
     g.activeBrush=CreateSolidBrush(RGB(34,128,82));
     g.passthroughBrush=CreateSolidBrush(RGB(168,116,32));
     g.waitingBrush=CreateSolidBrush(RGB(92,99,112));
     g.errorBrush=CreateSolidBrush(RGB(166,54,54));
 
-    g.applicationGroup=makeControl(L"BUTTON",L"Target application",BS_GROUPBOX,12,10,1200,98,0);
+    g.applicationGroup=makeControl(L"STATIC",L"Target application",SS_LEFT,28,16,220,22,0);if(g.headingFont)SendMessageW(g.applicationGroup,WM_SETFONT,(WPARAM)g.headingFont,TRUE);
     makeLabel(L"Application",28,31,95);
     g.process=makeControl(WC_COMBOBOXEXW,L"",CBS_DROPDOWNLIST|WS_VSCROLL,120,27,490,300,IDC_PROCESS);
     g.processCombo=(HWND)SendMessageW(g.process,CBEM_GETCOMBOCONTROL,0,0);
@@ -720,7 +916,7 @@ void makeUi() {
     makeControl(L"BUTTON",L"Reset history",0,1081,26,110,29,IDC_RESET_HISTORY);
     g.processDetail=makeControl(L"STATIC",L"",SS_LEFT,28,76,800,22,IDC_PROCESS_DETAIL);
 
-    g.neuralGroup=makeControl(L"BUTTON",L"Neural runtime",BS_GROUPBOX,12,114,1200,104,0);
+    g.neuralGroup=makeControl(L"STATIC",L"Neural runtime",SS_LEFT,28,120,220,22,0);if(g.headingFont)SendMessageW(g.neuralGroup,WM_SETFONT,(WPARAM)g.headingFont,TRUE);
     makeLabel(L"Runtime folder",28,140,120);
     g.runtime=makeControlEx(WS_EX_CLIENTEDGE,L"EDIT",(fs::path(g.appDir)/L"runtime").c_str(),ES_AUTOHSCROLL,150,136,470,25,IDC_RUNTIME);
     makeControl(L"BUTTON",L"Browse...",0,630,135,86,27,IDC_BROWSE);
@@ -732,7 +928,7 @@ void makeUi() {
     g.status=makeControl(L"STATIC",L"Ready. Select an application and attach.",SS_LEFT|SS_NOPREFIX,28,178,930,24,IDC_STATUS);
     g.badge=makeControl(L"STATIC",L"WAITING",SS_CENTER|SS_CENTERIMAGE|WS_BORDER,1065,176,124,28,IDC_BADGE);
 
-    g.settingsGroup=makeControl(L"BUTTON",L"Processing controls",BS_GROUPBOX,12,226,650,520,0);
+    g.settingsGroup=makeControl(L"STATIC",L"Processing controls",SS_LEFT,28,232,220,22,0);if(g.headingFont)SendMessageW(g.settingsGroup,WM_SETFONT,(WPARAM)g.headingFont,TRUE);
     makeControl(L"BUTTON",L"Processing enabled",BS_AUTOCHECKBOX,28,250,155,22,IDC_ENABLE);
     makeControl(L"BUTTON",L"Protect UI / text",BS_AUTOCHECKBOX,190,250,145,22,IDC_UI_PROTECT);
     makeControl(L"BUTTON",L"Use control mask",BS_AUTOCHECKBOX,342,250,145,22,IDC_CTRL_MASK);
@@ -746,7 +942,7 @@ void makeUi() {
     makeLabel(L"Latency",450,280,52);
     g.latency=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,505,276,130,180,IDC_LATENCY);
     comboAdd(g.latency,L"Ultra low");comboAdd(g.latency,L"Balanced");comboAdd(g.latency,L"Quality");
-    g.tabs=makeControl(WC_TABCONTROLW,L"",WS_TABSTOP,28,306,618,420,IDC_TABS);
+    g.tabs=makeControl(WC_TABCONTROLW,L"",WS_TABSTOP|TCS_OWNERDRAWFIXED|TCS_BUTTONS|TCS_FLATBUTTONS,28,306,618,420,IDC_TABS);TabCtrl_SetItemSize(g.tabs,112,30);
     TCITEMW item{};item.mask=TCIF_TEXT;
     wchar_t neural[]=L"Neural model";item.pszText=neural;TabCtrl_InsertItem(g.tabs,0,&item);
     wchar_t temporal[]=L"Temporal guides";item.pszText=temporal;TabCtrl_InsertItem(g.tabs,1,&item);
@@ -760,6 +956,8 @@ void makeUi() {
     makeLabel(L"Style",40,475,80,IDC_NR_STYLE_LABEL);g.nrStyle=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,120,471,170,180,IDC_NR_STYLE);comboAdd(g.nrStyle,L"Default");comboAdd(g.nrStyle,L"Natural");comboAdd(g.nrStyle,L"Cinematic");comboAdd(g.nrStyle,L"3");comboAdd(g.nrStyle,L"4");comboAdd(g.nrStyle,L"5");comboAdd(g.nrStyle,L"6");
     makeLabel(L"Model preset",342,475,100,IDC_NR_PRESET_LABEL);g.nrPreset=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,450,471,150,180,IDC_NR_PRESET);comboAdd(g.nrPreset,L"0");comboAdd(g.nrPreset,L"1");comboAdd(g.nrPreset,L"2");comboAdd(g.nrPreset,L"3");
     makeControl(L"BUTTON",L"Semantic auto-mask",BS_AUTOCHECKBOX,40,515,180,22,IDC_AUTO_MASK);makeControl(L"BUTTON",L"UI correction",BS_AUTOCHECKBOX,342,515,150,22,IDC_UI_CORRECTION);
+    makeLabel(L"Neural passes",40,552,105,IDC_NR_PASSES_LABEL);g.nrPasses=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,150,548,105,160,IDC_NR_PASSES);comboAdd(g.nrPasses,L"1x");comboAdd(g.nrPasses,L"2x");comboAdd(g.nrPasses,L"3x");comboAdd(g.nrPasses,L"4x");
+    makeControl(L"STATIC",L"Passes 2-4 are same-frame reset-only refinement passes. Higher values cost additional GPU time.",SS_LEFT,275,548,325,46,0);
 
     // Temporal guides tab
     createSlider(IDC_MOTIONSCALE,0,0);createSlider(IDC_CONF,1,0);createSlider(IDC_MOTION_X,0,1);createSlider(IDC_MOTION_Y,1,1);createSlider(IDC_DEADZONE,0,2);createSlider(IDC_DISOCC,1,2);createSlider(IDC_RADIUS,0,3);
@@ -780,14 +978,16 @@ void makeUi() {
     makeControl(L"BUTTON",L"Enable D3D11On12 source bridge",BS_AUTOCHECKBOX,42,390,245,22,IDC_ON12);
     makeControl(L"BUTTON",L"Process secondary swapchains",BS_AUTOCHECKBOX,42,425,230,22,IDC_SECONDARY);
     makeControl(L"BUTTON",L"Attempt unsupported hardware",BS_AUTOCHECKBOX,42,460,230,22,IDC_UNSUPPORTED);
+    makeLabel(L"Appearance",342,355,90,IDC_THEME_LABEL);g.theme=makeControl(WC_COMBOBOXW,L"",CBS_DROPDOWNLIST,440,351,160,160,IDC_THEME);comboAdd(g.theme,L"System");comboAdd(g.theme,L"Light");comboAdd(g.theme,L"Dark");
     makeControl(L"STATIC",L"Supported source APIs: Direct3D 11 and Direct3D 12. The neural pass always executes through D3D12. Vulkan/OpenGL are reported as unsupported. Protected/CIG processes are skipped; no mitigation bypass is used.",SS_LEFT,42,500,570,72,IDC_ADVANCED_NOTE);
 
-    g.diagnosticsGroup=makeControl(L"BUTTON",L"Diagnostics",BS_GROUPBOX,674,226,550,520,0);
+    g.diagnosticsGroup=makeControl(L"STATIC",L"Diagnostics",SS_LEFT,690,232,220,22,0);if(g.headingFont)SendMessageW(g.diagnosticsGroup,WM_SETFONT,(WPARAM)g.headingFont,TRUE);
     g.diagnostics=makeControlEx(WS_EX_CLIENTEDGE,L"EDIT",L"Waiting for an injected bridge...",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|ES_AUTOHSCROLL|WS_VSCROLL|WS_HSCROLL,690,260,518,430,IDC_DIAGNOSTICS);
     g.copyDiagnostics=makeControl(L"BUTTON",L"Copy diagnostics",0,690,700,130,28,IDC_COPY_DIAGNOSTICS);
     g.saveDiagnostics=makeControl(L"BUTTON",L"Save diagnostics",0,830,700,130,28,IDC_SAVE_DIAGNOSTICS);
 
     applyControls();
+    applyTheme();
     showSettingsTab(0);
     refresh();
     selectChanged();
@@ -801,7 +1001,13 @@ LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l) {
         g.hwnd=h;
         makeUi();
         SetTimer(h,1,500,nullptr);
+        g.maintenanceThread=std::jthread(maintenanceLoop);
         return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};HDC dc=BeginPaint(h,&ps);paintCards(dc);EndPaint(h,&ps);return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
     case WM_GETMINMAXINFO: {
         auto* info=reinterpret_cast<MINMAXINFO*>(l);
         info->ptMinTrackSize.x=1180;
@@ -816,15 +1022,27 @@ LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l) {
         if(hdr && hdr->idFrom==IDC_TABS && hdr->code==TCN_SELCHANGE){showSettingsTab(TabCtrl_GetCurSel(g.tabs));return 0;}
         break;
     }
-    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORSTATIC: {
+        HDC dc=(HDC)w;
         if((HWND)l==g.badge){
-            HDC dc=(HDC)w;SetTextColor(dc,RGB(255,255,255));
+            SetTextColor(dc,RGB(255,255,255));
             HBRUSH brush=g.waitingBrush;COLORREF color=RGB(92,99,112);
             if(g.badgeState==BadgeState::Active){brush=g.activeBrush;color=RGB(34,128,82);}
             else if(g.badgeState==BadgeState::Passthrough){brush=g.passthroughBrush;color=RGB(168,116,32);}
             else if(g.badgeState==BadgeState::Error){brush=g.errorBrush;color=RGB(166,54,54);}
             SetBkColor(dc,color);return (LRESULT)brush;
         }
+        SetBkMode(dc,TRANSPARENT);SetTextColor(dc,g.textColor);SetBkColor(dc,g.surfaceColor);return (LRESULT)g.surfaceBrush;
+    }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc=(HDC)w;SetTextColor(dc,g.textColor);SetBkColor(dc,g.inputColor);return (LRESULT)g.inputBrush;
+    }
+    case WM_CTLCOLORBTN: {
+        HDC dc=(HDC)w;SetTextColor(dc,g.textColor);SetBkColor(dc,g.surfaceColor);return (LRESULT)g.surfaceBrush;
+    }
+    case WM_DRAWITEM:
+        if(l){const auto& di=*reinterpret_cast<DRAWITEMSTRUCT*>(l);if(di.CtlID==IDC_TABS)drawModernTab(di);else drawModernButton(di);return TRUE;}
         break;
     case WM_COMMAND: {
         const int id=LOWORD(w), code=HIWORD(w);
@@ -832,7 +1050,7 @@ LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l) {
         if(id==IDC_PROCESS && code==CBN_SELCHANGE) { selectChanged(); return 0; }
         if(id==IDC_SHOW_ALL) { g.showAllProcesses=IsDlgButtonChecked(g.hwnd,IDC_SHOW_ALL)==BST_CHECKED; refresh(); selectChanged(); return 0; }
         if(id==IDC_ATTACH) { injectCurrentTree(); return 0; }
-        if(id==IDC_DETACH) { g.shared.requestUnload(true); g.injected.clear(); setBadge(BadgeState::Waiting); setStatusText(L"Unload requested for injected bridges."); return 0; }
+        if(id==IDC_DETACH) { {std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};} g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);g.primaryRendererPid=0;clearInjectedTracking();setBadge(BadgeState::Waiting);setStatusText(L"Unload requested for injected bridges.");return 0; }
         if(id==IDC_RESET_HISTORY) { g.shared.requestHistoryReset(); setStatusText(L"Temporal history reset requested."); return 0; }
         if(id==IDC_RETRY_NEURAL) { g.shared.requestNeuralRetry(); setBadge(BadgeState::Waiting); setStatusText(L"Neural backend retry requested. The next presented frame will rebuild the selected NR session/host."); return 0; }
         if(id==IDC_COPY_DIAGNOSTICS) { setStatusText(copyDiagnosticsToClipboard()?L"Diagnostics copied to clipboard.":L"No diagnostics available to copy."); return 0; }
@@ -844,6 +1062,7 @@ LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l) {
         }
         if(id==IDC_VALIDATE_RUNTIME) { setStatusText(validateRuntimeFolder(runtimeFolderFromUi())); return 0; }
         if(id==IDC_PRESET && code==CBN_SELCHANGE) { applySelectedPreset(); return 0; }
+        if(id==IDC_THEME && code==CBN_SELCHANGE) { readControls(false);applyTheme();return 0; }
         if(isSettingsControl(id)) { markCustomPreset(); readControls(false); return 0; }
         break;
     }
@@ -854,13 +1073,16 @@ LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l) {
         poll();
         return 0;
     case WM_DESTROY:
+        KillTimer(h,1);
+        {std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;}
+        if(g.maintenanceThread.joinable()){g.maintenanceThread.request_stop();g.maintenanceThread.join();}
         saveProfileIfDirty();
-        g.shared.requestUnload(true);
+        g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);
         if(g.processImages){ImageList_Destroy(g.processImages);g.processImages=nullptr;}
-        if(g.font){DeleteObject(g.font);g.font=nullptr;}
+        if(g.font){DeleteObject(g.font);g.font=nullptr;}if(g.headingFont){DeleteObject(g.headingFont);g.headingFont=nullptr;}
         if(g.activeBrush)DeleteObject(g.activeBrush);if(g.passthroughBrush)DeleteObject(g.passthroughBrush);if(g.waitingBrush)DeleteObject(g.waitingBrush);if(g.errorBrush)DeleteObject(g.errorBrush);
-        PostQuitMessage(0);
-        return 0;
+        if(g.backgroundBrush)DeleteObject(g.backgroundBrush);if(g.surfaceBrush)DeleteObject(g.surfaceBrush);if(g.inputBrush)DeleteObject(g.inputBrush);
+        PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(h,m,w,l);
 }
