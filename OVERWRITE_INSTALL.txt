@@ -1,5 +1,5 @@
-UniversalDLSS5 v0.3.2 - performance, detach stability + controller UI
-=====================================================================
+UniversalDLSS5 v0.4.3 - UE5 D3D12 Recovery Lifetime Isolation
+=============================================================
 This ZIP contains exactly one top-level folder: UniversalDLSS5\
 
 To install over the previous source tree:
@@ -8,13 +8,15 @@ To install over the previous source tree:
 3. Choose Replace/Overwrite for existing files.
 4. Run BUILD_WINDOWS.bat again.
 
-The fixes are already integrated; no .patch file needs to be applied manually.
+The changes are already integrated; no .patch file needs to be applied manually.
 
-This update keeps the v0.3.1 HDR/D3D12 safety work and adds:
-- real Feature-18 GPU timestamp telemetry separated from synchronized wait time;
-- lower hot-path allocation, synchronization, optical-flow, guide-discovery, and queue-discovery overhead;
-- a D3D11 black-screen regression fix while retaining safe owned-resource optimizations;
-- quiescent detach/unload ordering that drains in-flight hooks before graphics/neural teardown;
-- independently scrollable application selection with a visible scrollbar;
-- brief Refresh feedback even when process enumeration completes immediately;
-- public/runtime/package version metadata updated consistently to v0.3.2.
+Current v0.4.x renderer support includes:
+- native D3D11 and exact-queue D3D12 fast paths;
+- late-attach D3D12 recovery using same-queue D3D12 copies plus an explicit shared D3D12/D3D11 color surface;
+- x86-game -> x64 NRHost Feature 18 routing;
+- D3D10/10.1, D3D9Ex, classic D3D9, OpenGL, and Vulkan compatibility frontends;
+- automatic bridge detach after a target application exits and renderer activity stops;
+- quiescent manual detach with DetachedResident as the last-resort safety mode.
+
+Compatibility frontends remain isolated from proven native D3D11/D3D12 frames.
+There is no desktop/screen-capture fallback and no intentional Feature-18 color downscale.

@@ -115,7 +115,7 @@ public:
         shared_=static_cast<hostipc::Shared*>(MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(hostipc::Shared)));
         if(!shared_) { setFailure(st,PipelineStage::HostLaunchFailed,(int)GetLastError(),L"Could not map external NR host control block");shutdown();return false; }
         new(shared_) hostipc::Shared{};
-        shared_->bridgePid=GetCurrentProcessId();shared_->adapterHigh=adapterLuid_.HighPart;shared_->adapterLow=adapterLuid_.LowPart;
+        shared_->bridgePid=GetCurrentProcessId();shared_->sourceApi=(std::uint32_t)st.api;shared_->rendererRoute=(std::uint32_t)st.rendererRoute;shared_->bridgeArchitectureBits=sizeof(void*)*8u;shared_->canonicalColorSpace=st.swapchainColorSpace;shared_->adapterHigh=adapterLuid_.HighPart;shared_->adapterLow=adapterLuid_.LowPart;
         shared_->allowUnsupportedHardware=settings.attemptUnsupportedHardware?1u:0u;
         st.attemptUnsupportedHardware=shared_->allowUnsupportedHardware;
         wcsncpy_s(shared_->runtimePath,runtime.c_str(),_TRUNCATE);
@@ -138,7 +138,7 @@ public:
             setFailure(st,PipelineStage::HostLaunchFailed,0,L"UniversalDLSS5.NRHost.exe is missing beside the bridge");shutdown();return false;
         }
         std::wstring command=L"\""+hostExe.wstring()+L"\" --session \""+names_.map+L"\"";
-        STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
+        STARTUPINFOW si{};si.cb=sizeof(si);si.dwFlags=STARTF_USESHOWWINDOW;si.wShowWindow=SW_HIDE;PROCESS_INFORMATION pi{};
         if(!CreateProcessW(hostExe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,moduleDirectory().c_str(),&si,&pi)) {
             CloseHandle(fenceHandle);
             setFailure(st,PipelineStage::HostLaunchFailed,(int)GetLastError(),L"Could not start UniversalDLSS5.NRHost.exe");shutdown();return false;
@@ -163,6 +163,7 @@ public:
 
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& st) override {
         st.neuralApi=NeuralExecutionApi::D3D12;
+        st.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
         if(!initialized_ || !shared_) return false;
         mergeHostStatus(st);
         shared_->frameReset=(frame.resetHistory||forceResetNext_)?1u:0u;
@@ -172,6 +173,8 @@ public:
         shared_->nrUiCorrection=settings.nrUiCorrection?1u:0u;
         shared_->nrStyle=settings.nrStyle;
         shared_->nrPreset=settings.nrPreset;
+        shared_->nrPassesRequested=st.neuralPassesRequested;
+        shared_->nrPassesExecuted=0;
         shared_->nrIntensity=settings.nrIntensity;
         shared_->nrTone=settings.nrTone;
         shared_->nrStructure=settings.nrStructure;
@@ -234,6 +237,10 @@ public:
         if(FAILED(ctx11v4_->Signal(fence11_.Get(),inputValue))) {
             setFailure(st,PipelineStage::HostRuntimeFailed,0,L"D3D11 signal to external NR host failed");return false;
         }
+        // The host queue waits on this fence from another D3D API/process.  As
+        // with the proven in-process path, explicitly flush the D3D11 producer
+        // so the fence signal is submitted before NRHost begins waiting on it.
+        ctx11_->Flush();
         InterlockedExchange64(&shared_->inputFenceValue,(LONGLONG)inputValue);
         InterlockedExchange64(&shared_->outputFenceValue,(LONGLONG)outputValue);
         ResetEvent(doneEvent_);
@@ -269,6 +276,7 @@ public:
             st.failureStage=PipelineStage::None;
         const LONG published=InterlockedCompareExchange(&shared_->enqueuedSeq,0,0);
         st.neuralActive=(nrHostSequenceEnqueued(published,seq) && shared_->lastResult==1 && static_cast<hostipc::Route>(shared_->route)!=hostipc::Route::None)?1u:0u;
+        if(st.neuralActive) ++st.externalHostFrames;
         if(st.neuralActive) forceResetNext_=false;
         return true; // frame is GPU-queued; host guarantees passthrough output even if NR evaluation fails
     }
@@ -287,6 +295,7 @@ private:
         st.realGpuArchitecture=shared_->realGpuArchitecture;
         st.reportedGpuArchitecture=shared_->reportedGpuArchitecture;
         st.architectureCompatibilityActive=shared_->architectureCompatibilityActive;
+        st.neuralPassesExecuted=shared_->nrPassesExecuted;
         if(shared_->message[0]) wcsncpy_s(st.message,shared_->message,_TRUNCATE);
         const auto route=static_cast<hostipc::Route>(shared_->route);
         if(route==hostipc::Route::CoreDispatch) wcscpy_s(st.backendName,L"External NR Host (NGX core dispatch)");
@@ -295,10 +304,10 @@ private:
 
     bool makeSharedTexture(UINT w,UINT h,DXGI_FORMAT format,ComPtr<ID3D11Texture2D>& out,std::uint64_t& hostHandle,RuntimeStatus& st) {
         D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=1;d.ArraySize=1;d.Format=format;d.SampleDesc.Count=1;
-        d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;d.MiscFlags=D3D11_RESOURCE_MISC_SHARED_NTHANDLE|D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;d.MiscFlags=D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         if(FAILED(d11_->CreateTexture2D(&d,nullptr,&out))) { setFailure(st,PipelineStage::HostResourceShareFailed,0,L"Could not create GPU-shareable external-host texture");return false; }
         ComPtr<IDXGIResource1> r;if(FAILED(out.As(&r))) { setFailure(st,PipelineStage::HostResourceShareFailed,0,L"External-host texture does not expose IDXGIResource1");return false; }
-        HANDLE hnd{};const HRESULT hr=r->CreateSharedHandle(nullptr,DXGI_SHARED_RESOURCE_READ|DXGI_SHARED_RESOURCE_WRITE,nullptr,&hnd);
+        HANDLE hnd{};const HRESULT hr=r->CreateSharedHandle(nullptr,GENERIC_ALL,nullptr,&hnd);
         if(FAILED(hr)||!hnd) { setFailure(st,PipelineStage::HostResourceShareFailed,(int)hr,L"Could not create external-host texture NT handle");return false; }
         const bool duplicated=duplicateIntoProcess(hnd,hostProcess_,hostHandle);
         const auto duplicateError=duplicated?ERROR_SUCCESS:GetLastError();
@@ -323,7 +332,7 @@ private:
         shared_->width=f.width;shared_->height=f.height;shared_->colorFormat=(std::uint32_t)f.inputFormat;shared_->motionFormat=(std::uint32_t)f.motionFormat;shared_->depthFormat=(std::uint32_t)f.depthFormat;shared_->controlMaskFormat=(std::uint32_t)f.controlMaskFormat;
         wcsncpy_s(shared_->colorName,colorName.c_str(),_TRUNCATE);wcsncpy_s(shared_->outputName,outputName.c_str(),_TRUNCATE);wcsncpy_s(shared_->motionName,motionName.c_str(),_TRUNCATE);wcsncpy_s(shared_->depthName,depthName.c_str(),_TRUNCATE);wcsncpy_s(shared_->controlMaskName,controlName.c_str(),_TRUNCATE);
         InterlockedExchange(&shared_->state,(LONG)hostipc::State::Configuring);
-        InterlockedIncrement(&shared_->configGeneration);SetEvent(frameEvent_);
+        ++shared_->resourceGeneration;InterlockedIncrement(&shared_->configGeneration);SetEvent(frameEvent_);
         if(!waitForState(shared_,hostProcess_,hostipc::State::Ready,5000)) {
             mergeHostStatus(st);if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::HostRuntimeFailed;return false;
         }

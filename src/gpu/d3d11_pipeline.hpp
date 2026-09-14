@@ -18,6 +18,7 @@ public:
  D3D11Pipeline()=default;~D3D11Pipeline();
  bool initialize(ID3D11Device* device,ID3D11DeviceContext* context,const std::wstring& moduleDir,RuntimeStatus& status);
  void setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queue);
+ void setForceExternalHost(bool value);
  bool process(ID3D11Texture2D* backbuffer,const Settings& settings,const std::wstring& runtime,RuntimeStatus& status,const GuideProbeResult* externalGuide=nullptr,const SwapchainColorContext* colorContext=nullptr);
  void reset();
  void retryNeural();
@@ -35,6 +36,6 @@ private:
  D3D11GuideExtractor guideExtractor_;
  bool forceResetNext_{true}; MotionRoute lastMotionRoute_{MotionRoute::Zero}; bool motionRouteValid_{}; bool hlslHistoryValid_{};
  std::wstring moduleDir_,runtime_;std::uint32_t width_{},height_{};DXGI_FORMAT backFormat_{DXGI_FORMAT_UNKNOWN};bool hasHistory_{};BackendMode backendMode_{BackendMode::Passthrough};bool attemptUnsupportedCached_{};neural::Backend* backend_{};
- bool backendFallback_{};std::wstring backendFallbackMessage_;std::int32_t backendFallbackResult_{};std::uint32_t backendFallbackRequiredTags_{},backendFallbackMissingTag_{};RuntimeFeatureDiagnostics backendFallbackFeature_{};PipelineStage backendFallbackFailureStage_{PipelineStage::None};std::uint64_t backendFallbackStageMask_{};NeuralExecutionApi backendFallbackNeuralApi_{NeuralExecutionApi::None};
+ bool forceExternalHost_{}; bool backendFallback_{};std::wstring backendFallbackMessage_;std::int32_t backendFallbackResult_{};std::uint32_t backendFallbackRequiredTags_{},backendFallbackMissingTag_{};RuntimeFeatureDiagnostics backendFallbackFeature_{};PipelineStage backendFallbackFailureStage_{PipelineStage::None};std::uint64_t backendFallbackStageMask_{};NeuralExecutionApi backendFallbackNeuralApi_{NeuralExecutionApi::None};
 };
 }

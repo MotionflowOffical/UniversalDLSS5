@@ -12,6 +12,7 @@ enum class AttachLogStage {
     CoreHooksInstalled,
     WaitingForPresent,
     PresentObserved,
+    SourceD3D9Detected,
     SourceD3D11Detected,
     SourceD3D12Detected,
     D3D12QueueCaptured,

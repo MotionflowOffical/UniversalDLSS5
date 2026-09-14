@@ -25,6 +25,7 @@ const wchar_t* label(AttachLogStage stage){
     case AttachLogStage::CoreHooksInstalled:return L"Core DXGI/D3D12 queue hooks installed";
     case AttachLogStage::WaitingForPresent:return L"Waiting for stable Present stream";
     case AttachLogStage::PresentObserved:return L"Present observed";
+    case AttachLogStage::SourceD3D9Detected:return L"D3D9 source detected";
     case AttachLogStage::SourceD3D11Detected:return L"D3D11 source detected";
     case AttachLogStage::SourceD3D12Detected:return L"D3D12 source detected";
     case AttachLogStage::D3D12QueueCaptured:return L"D3D12 presenting DIRECT queue proven";
@@ -78,8 +79,14 @@ LONG CALLBACK crashVeh(EXCEPTION_POINTERS* ep){
     if(!ep||!ep->ExceptionRecord)return EXCEPTION_CONTINUE_SEARCH;
     const DWORD code=ep->ExceptionRecord->ExceptionCode;
     if(code!=EXCEPTION_ACCESS_VIOLATION&&code!=EXCEPTION_ILLEGAL_INSTRUCTION&&code!=EXCEPTION_STACK_OVERFLOW&&code!=0xC0000374u)return EXCEPTION_CONTINUE_SEARCH;
-    wchar_t line[768]{};
-    swprintf_s(line,L"[%llu] exception observed: code=0x%08lX address=%p | crash stage: %ls",GetTickCount64(),code,ep->ExceptionRecord->ExceptionAddress,crashLabel(g_crashStage.load(std::memory_order_relaxed)));
+    wchar_t modulePath[MAX_PATH]{};const wchar_t* moduleName=L"(unknown)";std::uint64_t rva{};HMODULE faultModule{};
+    const auto faultAddress=ep->ExceptionRecord->ExceptionAddress;
+    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(faultAddress),&faultModule)&&faultModule){
+        if(GetModuleFileNameW(faultModule,modulePath,_countof(modulePath))){moduleName=modulePath;for(const wchar_t* p=modulePath;*p;++p)if(*p==L'\\'||*p==L'/')moduleName=p+1;}
+        const auto addressValue=reinterpret_cast<std::uintptr_t>(faultAddress);const auto moduleValue=reinterpret_cast<std::uintptr_t>(faultModule);if(addressValue>=moduleValue)rva=static_cast<std::uint64_t>(addressValue-moduleValue);
+    }
+    wchar_t line[1024]{};
+    swprintf_s(line,L"[%llu] exception observed: code=0x%08lX address=%p module=%ls RVA=0x%llX | crash stage: %ls",GetTickCount64(),code,faultAddress,moduleName,rva,crashLabel(g_crashStage.load(std::memory_order_relaxed)));
     appendCrashLine(line);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -95,7 +102,7 @@ void initializeAttachLog(){
     g_path=base/name.str();
     wcsncpy_s(g_crashPath,g_path.c_str(),_TRUNCATE);
     std::ofstream out(g_path,std::ios::binary|std::ios::trunc);
-    if(out)out<<"UniversalDLSS5 v0.3.2 staged attach/crash log\r\nPID="<<GetCurrentProcessId()<<"\r\n";
+    if(out)out<<"UniversalDLSS5 v0.4.3 staged attach/crash log\r\nPID="<<GetCurrentProcessId()<<"\r\n";
     if(!g_veh)g_veh=AddVectoredExceptionHandler(0,crashVeh);
 }
 void logAttachStage(AttachLogStage stage,std::wstring_view detail){

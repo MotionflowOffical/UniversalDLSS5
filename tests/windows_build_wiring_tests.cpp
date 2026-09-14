@@ -23,8 +23,8 @@ int main() {
     const std::filesystem::path root = UDLSS_SOURCE_DIR;
     const auto cmake = readFile(root / "CMakeLists.txt");
     const auto buildScript = readFile(root / "BUILD_WINDOWS.bat");
-    if (cmake.find("project(UniversalDLSS5 VERSION 0.3.2") == std::string::npos ||
-        buildScript.find("UniversalDLSS5 v0.3.2") == std::string::npos ||
+    if (cmake.find("project(UniversalDLSS5 VERSION 0.4.3") == std::string::npos ||
+        buildScript.find("UniversalDLSS5 v0.4.3") == std::string::npos ||
         buildScript.find("-DUDLSS_WITH_STREAMLINE=ON") == std::string::npos) {
         std::cerr << "v0.2.8 Windows build does not enable the direct in-game Streamline mount/header path\n";
         return 1;
@@ -182,9 +182,9 @@ int main() {
         return 1;
     }
 
-    if (externalHost.find("D3D11_RESOURCE_MISC_SHARED_NTHANDLE") == std::string::npos ||
-        externalHost.find("D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX") == std::string::npos ||
-        externalHost.find("CreateSharedHandle") == std::string::npos ||
+    if (externalHost.find("D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE") == std::string::npos ||
+        externalHost.find("D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX") != std::string::npos ||
+        externalHost.find("CreateSharedHandle(nullptr,GENERIC_ALL") == std::string::npos ||
         externalHost.find("DuplicateHandle") == std::string::npos ||
         externalHost.find("UniversalDLSS5.NRHost.exe") == std::string::npos ||
         externalHost.find("WaitForSingleObject(hostProcess") == std::string::npos ||
@@ -238,7 +238,7 @@ int main() {
         std::cerr << "External NR protocol does not carry control mask, reset, and verified NR tuning values\n";
         return 1;
     }
-    if (externalProtocol.find("kAbi=4") == std::string::npos ||
+    if (externalProtocol.find("kAbi=6") == std::string::npos ||
         externalProtocol.find("fenceHandle") == std::string::npos ||
         externalProtocol.find("colorHandle") == std::string::npos ||
         externalProtocol.find("outputHandle") == std::string::npos ||
@@ -264,10 +264,12 @@ int main() {
         hostMain.find("DLSSNR.ControlMask") == std::string::npos ||
         hostMain.find("DLSSNR.SkinStructureStrength") == std::string::npos ||
         hostMain.find("DLSSNR.UICorrection") == std::string::npos ||
-        hostMain.find("PaperWhiteScale") == std::string::npos ||
-        hostMain.find("TransferStrength") == std::string::npos ||
-        hostMain.find("ColorStrength") == std::string::npos) {
-        std::cerr << "External NR host does not bind the verified anti-ghosting mask/tuning contract\n";
+        hostMain.find("DLSS.Indicator.Invert.X.Axis") == std::string::npos ||
+        hostMain.find("DLSS.Indicator.Invert.Y.Axis") == std::string::npos ||
+        hostMain.find("NVSDK_NGX_Parameter_SetF(params,kPaperWhite") != std::string::npos ||
+        hostMain.find("NVSDK_NGX_Parameter_SetF(params,kTransferStrength") != std::string::npos ||
+        hostMain.find("NVSDK_NGX_Parameter_SetF(params,kColorStrength") != std::string::npos) {
+        std::cerr << "External NR host does not bind the verified Feature-18 mask/tuning contract\n";
         return 1;
     }
 

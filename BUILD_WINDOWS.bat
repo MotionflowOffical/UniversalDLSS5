@@ -5,7 +5,7 @@ where cmake >nul 2>nul || (echo [ERROR] CMake is required. & exit /b 1)
 where git >nul 2>nul || (echo [ERROR] Git is required for pinned MinHook/NVIDIA NGX dependencies. & exit /b 1)
 
 echo ========================================================================
-echo UniversalDLSS5 v0.3.2 - Release build x64 + x86 bridge/injector
+echo UniversalDLSS5 v0.4.3 - Release build x64 + x86 bridge/injector
 echo Direct in-game NR + external-host fallback; optional Streamline feature 1004 when plugin files are supplied
 echo ========================================================================
 cmake -S . -B build\x64 -A x64 -DUDLSS_BUILD_TESTS=ON -DUDLSS_WITH_NGX_NR=ON -DUDLSS_WITH_STREAMLINE=ON %*

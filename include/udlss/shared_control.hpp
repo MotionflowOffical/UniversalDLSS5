@@ -2,21 +2,26 @@
 #include "settings.hpp"
 #include "runtime_diagnostics.hpp"
 #include "neural_route_policy.hpp"
+#include "renderer_route_policy.hpp"
 #include <array>
 #include <cstdint>
 #include <cwchar>
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 19;
+constexpr std::uint32_t kControlAbi = 20;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
-enum class GraphicsApi : std::uint32_t { Unknown=0, D3D11=11, D3D12=12 };
+enum class GraphicsApi : std::uint32_t { Unknown=0, D3D9=9, D3D10=10, D3D11=11, D3D12=12, OpenGL=0x1000, Vulkan=0x1001 };
 enum class RuntimeState : std::uint32_t { Idle=0, Injected=1, Hooked=2, Processing=3, Bypassed=4, Error=5, Unloading=6 };
 
 struct RuntimeStatus {
     std::uint32_t pid{};
     GraphicsApi api{GraphicsApi::Unknown};
+    RendererRoute rendererRoute{RendererRoute::Unknown};
+    CompatInterop compatInterop{CompatInterop::None};
+    DetachMode detachMode{DetachMode::None};
+    std::uint32_t gameArchitectureBits{sizeof(void*)*8u};
     NeuralExecutionApi neuralApi{NeuralExecutionApi::None};
     RuntimeState state{RuntimeState::Idle};
     NeuralExecutionLocation neuralLocation{NeuralExecutionLocation::Unknown};
@@ -29,6 +34,13 @@ struct RuntimeStatus {
     std::uint64_t processedFrames{};
     std::uint64_t bypassedFrames{};
     std::uint64_t neuralFrames{};
+    std::uint64_t nativeFrames{};
+    std::uint64_t compatFrames{};
+    std::uint64_t legacyCopies{};
+    std::uint64_t externalHostFrames{};
+    std::uint32_t colorPathWidth{};
+    std::uint32_t colorPathHeight{};
+    std::uint32_t queueProofConfidence{};
     std::uint32_t neuralActive{};
     float lastGpuMs{};
     float estimatedFps{};
@@ -84,6 +96,8 @@ struct RuntimeStatus {
     wchar_t nvidiaDriverVersion[32]{};
     wchar_t temporalReason[96]{};
     wchar_t backendName[64]{};
+    wchar_t compatFrontendName[96]{};
+    wchar_t interopName[128]{};
     wchar_t flowName[96]{};
     wchar_t depthName[96]{};
     wchar_t guideAdapterName[96]{};

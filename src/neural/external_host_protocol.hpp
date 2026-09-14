@@ -4,7 +4,7 @@
 
 namespace udlss::neural::hostipc {
 constexpr std::uint32_t kMagic=0x48524E35u; // 5NRH
-constexpr std::uint32_t kAbi=4;
+constexpr std::uint32_t kAbi=6;
 enum class State : LONG { Booting=0, WaitingConfig=1, Configuring=2, Ready=3, Active=4, Error=5, Stopping=6 };
 enum class Route : LONG { None=0, CoreDispatch=1, SignedSnippet=2 };
 #pragma pack(push,8)
@@ -20,6 +20,12 @@ struct Shared {
     volatile LONG stopRequested{};
     std::uint32_t bridgePid{};
     std::uint32_t hostPid{};
+    std::uint32_t sourceApi{};
+    std::uint32_t rendererRoute{};
+    std::uint32_t bridgeArchitectureBits{};
+    std::uint32_t canonicalColorSpace{};
+    std::uint32_t resourceGeneration{};
+    std::uint32_t capabilityFlags{};
     std::int32_t adapterHigh{};
     std::uint32_t adapterLow{};
     std::uint32_t width{},height{};
@@ -48,6 +54,10 @@ struct Shared {
     std::uint32_t nrUiCorrection{1};
     std::uint32_t nrStyle{1};
     std::uint32_t nrPreset{};
+    std::uint32_t nrPassesRequested{1};
+    std::uint32_t nrPassesExecuted{};
+    std::uint32_t refinementAvailable{};
+    std::int32_t refinementFailureResult{};
     float nrIntensity{0.85f};
     float nrTone{0.45f};
     float nrStructure{1.0f};

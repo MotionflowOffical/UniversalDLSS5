@@ -65,6 +65,13 @@ void D3D11Pipeline::setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queu
     nativeD12_=device; nativeQueue12_=queue;
 }
 
+void D3D11Pipeline::setForceExternalHost(bool value){
+    if(forceExternalHost_==value)return;
+    forceExternalHost_=value;
+    if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+    backendFallback_=false;
+}
+
 void D3D11Pipeline::releaseViews(){
     sourceCopy_.Reset(); current_.Reset(); history_.Reset(); currentLow_.Reset(); historyLow_.Reset(); nrInput8_.Reset(); nrOutput8_.Reset(); postOut_.Reset(); flowLow_.Reset(); motionTex_.Reset(); depthTex_.Reset(); maskTex_.Reset(); nrControlMaskTex_.Reset();
     sourceSrv_.Reset(); currentSrv_.Reset(); historySrv_.Reset(); currentLowSrv_.Reset(); historyLowSrv_.Reset(); nrInput8Srv_.Reset(); nrOutput8Srv_.Reset(); postSrv_.Reset(); flowSrv_.Reset(); motionSrv_.Reset(); depthSrv_.Reset(); maskSrv_.Reset(); nrControlMaskSrv_.Reset();
@@ -173,8 +180,39 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
     backendFallback_=false;backendFallbackMessage_.clear();backendFallbackResult_=0;backendFallbackRequiredTags_=0;backendFallbackMissingTag_=0;backendFallbackFeature_={};backendFallbackFailureStage_=PipelineStage::None;backendFallbackStageMask_=0;backendFallbackNeuralApi_=NeuralExecutionApi::None;
     neural::BackendInitContext init{device_.Get(),context_.Get(),nativeD12_.Get(),nativeQueue12_.Get()};
 
+    if(s.backend==BackendMode::InGameNR && forceExternalHost_){
+        const RuntimeStatus preInit=st;
+        backend_=neural::createExternalHostNR();
+        RuntimeStatus hostStatus=preInit;
+        if(backend_ && backend_->initialize(init,runtime,s,hostStatus)){
+            st=hostStatus;st.neuralLocation=NeuralExecutionLocation::ExternalHost;st.neuralBackendKind=NeuralBackendKind::ExternalHost;
+            wcsncpy_s(st.backendName,L"External x64 Feature 18 host (D3D12 recovery isolation)",_TRUNCATE);
+            wcsncpy_s(st.message,L"D3D12 recovery route isolated through x64 NRHost",_TRUNCATE);
+            return true;
+        }
+        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backendFallback_=true;
+        backendFallbackMessage_=hostStatus.message[0]?hostStatus.message:L"D3D12 recovery requires UniversalDLSS5.NRHost.exe";
+        backendFallbackResult_=hostStatus.lastResult;backendFallbackRequiredTags_=hostStatus.requiredTagCount;backendFallbackMissingTag_=hostStatus.missingRequiredTag;backendFallbackFeature_=hostStatus.feature;backendFallbackFailureStage_=hostStatus.failureStage;backendFallbackStageMask_=hostStatus.stageMask;backendFallbackNeuralApi_=hostStatus.neuralApi;
+        backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+    }
+
     if(s.backend==BackendMode::InGameNR){
         const RuntimeStatus preInit=st;
+#if INTPTR_MAX == INT32_MAX
+        // A 32-bit bridge cannot load the x64 signed Feature-18 runtime in-process.
+        // Route directly to the x64 NRHost instead of attempting an impossible
+        // in-process NGX/Streamline initialization first.
+        backend_=neural::createExternalHostNR();
+        RuntimeStatus hostStatus=preInit;
+        if(backend_ && backend_->initialize(init,runtime,s,hostStatus)){
+            st=hostStatus;st.neuralLocation=NeuralExecutionLocation::ExternalHost;st.neuralBackendKind=NeuralBackendKind::ExternalHost;
+            wcsncpy_s(st.backendName,L"External x64 Feature 18 host (x86 game)",_TRUNCATE);return true;
+        }
+        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backendFallback_=true;backendFallbackMessage_=hostStatus.message[0]?hostStatus.message:L"x86 game requires UniversalDLSS5.NRHost.exe x64";backendFallbackResult_=hostStatus.lastResult;backendFallbackFailureStage_=hostStatus.failureStage;backendFallbackStageMask_=hostStatus.stageMask;backendFallbackNeuralApi_=hostStatus.neuralApi;
+        backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+#else
         backend_=neural::createInGameNR();
         RuntimeStatus directStatus=preInit;
         if(backend_ && backend_->initialize(init,runtime,s,directStatus)){
@@ -207,6 +245,7 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
         backendFallbackStageMask_=directStatus.stageMask|hostStatus.stageMask;
         backendFallbackNeuralApi_=hostStatus.neuralApi!=NeuralExecutionApi::None?hostStatus.neuralApi:directStatus.neuralApi;
         backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+#endif
     }
 
     backend_=s.backend==BackendMode::ExternalHostNR?neural::createExternalHostNR():neural::createPassthrough();

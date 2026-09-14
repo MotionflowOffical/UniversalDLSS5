@@ -31,15 +31,23 @@ struct Entry {
 struct TrackerState {
     mutable std::mutex mutex;
     std::unordered_map<ID3D12Resource*,Entry> entries;
-    std::unordered_map<ID3D12GraphicsCommandList*,std::vector<ID3D12Resource*>> commandListTouches;
+    struct TouchEntry { std::vector<ID3D12Resource*> resources; bool legacyBarrier{}; bool enhancedBarrier{}; bool presentTransition{}; };
+    std::unordered_map<ID3D12GraphicsCommandList*,TouchEntry> commandListTouches;
     std::uint64_t frame{1};
     std::uint64_t nextId{1};
 } g;
 thread_local bool g_suppressed=false;
 std::atomic_bool queueTouchCaptureEnabled{true};
+std::atomic_bool semanticResourceTrackingEnabled{true};
 
 using ResourceBarrierFn=void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,UINT,const D3D12_RESOURCE_BARRIER*);
 ResourceBarrierFn origResourceBarrier{};
+#if defined(__ID3D12GraphicsCommandList7_INTERFACE_DEFINED__)
+using EnhancedBarrierFn=void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList7*,UINT32,const D3D12_BARRIER_GROUP*);
+EnhancedBarrierFn origEnhancedBarrier{};
+constexpr std::size_t kCommandList7BarrierVtableIndex=80;
+std::atomic_bool enhancedBarrierTrackingAvailable{false};
+#endif
 
 bool isDepthFormat(DXGI_FORMAT f){
     switch(f){
@@ -86,6 +94,13 @@ void STDMETHODCALLTYPE hkResourceBarrier(ID3D12GraphicsCommandList* list,UINT co
     if(call.customWorkAllowed()&&!g_suppressed)globalD3D12ResourceTracker().onResourceBarriers(list,count,barriers);
     origResourceBarrier(list,count,barriers);
 }
+#if defined(__ID3D12GraphicsCommandList7_INTERFACE_DEFINED__)
+void STDMETHODCALLTYPE hkEnhancedBarrier(ID3D12GraphicsCommandList7* list,UINT32 count,const D3D12_BARRIER_GROUP* groups){
+    udlss::bridge::HookCallScope call;
+    if(call.customWorkAllowed()&&!g_suppressed)globalD3D12ResourceTracker().onEnhancedBarriers(list,count,groups);
+    origEnhancedBarrier(list,count,groups);
+}
+#endif
 }
 
 D3D12ResourceTracker& globalD3D12ResourceTracker(){static D3D12ResourceTracker t;return t;}
@@ -93,12 +108,18 @@ void setD3D12TrackingSuppressed(bool v){g_suppressed=v;}
 bool d3d12TrackingSuppressed(){return g_suppressed;}
 void setD3D12QueueTouchCaptureEnabled(bool value){const bool previous=queueTouchCaptureEnabled.exchange(value,std::memory_order_relaxed);if(previous!=value){std::scoped_lock lock(g.mutex);g.commandListTouches.clear();}}
 bool d3d12QueueTouchCaptureEnabled(){return queueTouchCaptureEnabled.load(std::memory_order_relaxed);}
+void setD3D12SemanticResourceTrackingEnabled(bool value){
+    const bool previous=semanticResourceTrackingEnabled.exchange(value,std::memory_order_relaxed);
+    if(previous&&!value){std::scoped_lock lock(g.mutex);g.entries.clear();}
+}
+bool d3d12SemanticResourceTrackingEnabled(){return semanticResourceTrackingEnabled.load(std::memory_order_relaxed);}
 
 void D3D12ResourceTracker::onResourceBarriers(ID3D12GraphicsCommandList* list,UINT count,const D3D12_RESOURCE_BARRIER* barriers){
     if(!barriers)return;const bool captureQueueTouches=list&&queueTouchCaptureEnabled.load(std::memory_order_relaxed);std::scoped_lock lock(g.mutex);
     for(UINT i=0;i<count;i++){
         const auto& b=barriers[i];if(b.Type!=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION||!b.Transition.pResource)continue;
-        if(captureQueueTouches){auto& touched=g.commandListTouches[list];if(std::find(touched.begin(),touched.end(),b.Transition.pResource)==touched.end())touched.push_back(b.Transition.pResource);}
+        if(captureQueueTouches){auto& touch=g.commandListTouches[list];touch.legacyBarrier=true;touch.presentTransition|=b.Transition.StateBefore==D3D12_RESOURCE_STATE_PRESENT||b.Transition.StateAfter==D3D12_RESOURCE_STATE_PRESENT;if(std::find(touch.resources.begin(),touch.resources.end(),b.Transition.pResource)==touch.resources.end())touch.resources.push_back(b.Transition.pResource);}
+        if(!semanticResourceTrackingEnabled.load(std::memory_order_relaxed))continue;
         auto* e=getOrCreate(b.Transition.pResource);if(!e)continue;
         e->lastSeenFrame=g.frame;e->state=b.Transition.StateAfter;
         const bool wasWrite=writeState(b.Transition.StateBefore),nowWrite=writeState(b.Transition.StateAfter),nowRead=readState(b.Transition.StateAfter);
@@ -106,6 +127,20 @@ void D3D12ResourceTracker::onResourceBarriers(ID3D12GraphicsCommandList* list,UI
         if(nowRead){++e->frameReads;if(e->frameSawWrite){++e->frameReadAfterWrite;if(e->depthLike)e->frameDepthWriteToRead=true;}}
     }
 }
+#if defined(__ID3D12GraphicsCommandList7_INTERFACE_DEFINED__)
+void D3D12ResourceTracker::onEnhancedBarriers(ID3D12GraphicsCommandList* list,UINT32 count,const D3D12_BARRIER_GROUP* groups){
+    if(!list||!groups||!queueTouchCaptureEnabled.load(std::memory_order_relaxed))return;
+    std::scoped_lock lock(g.mutex);
+    auto& touch=g.commandListTouches[list];
+    touch.enhancedBarrier=true;
+    auto remember=[&](ID3D12Resource* r){if(!r)return;if(std::find(touch.resources.begin(),touch.resources.end(),r)==touch.resources.end())touch.resources.push_back(r);};
+    for(UINT32 gi=0;gi<count;++gi){const auto& group=groups[gi];
+        if(group.Type==D3D12_BARRIER_TYPE_TEXTURE && group.pTextureBarriers){for(UINT32 i=0;i<group.NumBarriers;++i){const auto& b=group.pTextureBarriers[i];remember(b.pResource);touch.presentTransition|=b.LayoutBefore==D3D12_BARRIER_LAYOUT_PRESENT||b.LayoutAfter==D3D12_BARRIER_LAYOUT_PRESENT;}}
+        else if(group.Type==D3D12_BARRIER_TYPE_BUFFER && group.pBufferBarriers){for(UINT32 i=0;i<group.NumBarriers;++i)remember(group.pBufferBarriers[i].pResource);}
+    }
+}
+#endif
+
 void D3D12ResourceTracker::finalizeFrame(ID3D12Device* device,UINT,UINT){
     std::scoped_lock lock(g.mutex);
     for(auto it=g.entries.begin();it!=g.entries.end();){auto& e=it->second;
@@ -139,15 +174,17 @@ D3D12DepthCandidate D3D12ResourceTracker::bestDepthCandidate(ID3D12Device* devic
 D3D12_RESOURCE_STATES D3D12ResourceTracker::currentState(ID3D12Resource* resource,D3D12_RESOURCE_STATES fallback) const{
     if(!resource)return fallback;std::scoped_lock lock(g.mutex);auto it=g.entries.find(resource);return it==g.entries.end()?fallback:it->second.state;
 }
-std::vector<ID3D12Resource*> D3D12ResourceTracker::takeCommandListTouches(ID3D12CommandList* commandList){
+D3D12CommandListTouchInfo D3D12ResourceTracker::takeCommandListTouchInfo(ID3D12CommandList* commandList){
     if(!commandList)return {};
     ComPtr<ID3D12GraphicsCommandList> graphics;
     if(FAILED(commandList->QueryInterface(IID_PPV_ARGS(&graphics))))return {};
     std::scoped_lock lock(g.mutex);
     auto it=g.commandListTouches.find(graphics.Get());if(it==g.commandListTouches.end())return {};
-    auto out=std::move(it->second);g.commandListTouches.erase(it);return out;
+    D3D12CommandListTouchInfo out{};out.resources=std::move(it->second.resources);out.legacyBarrier=it->second.legacyBarrier;out.enhancedBarrier=it->second.enhancedBarrier;out.presentTransition=it->second.presentTransition;g.commandListTouches.erase(it);return out;
 }
+std::vector<ID3D12Resource*> D3D12ResourceTracker::takeCommandListTouches(ID3D12CommandList* commandList){return takeCommandListTouchInfo(commandList).resources;}
 std::vector<ID3D12Resource*> takeD3D12CommandListTouches(ID3D12CommandList* commandList){return globalD3D12ResourceTracker().takeCommandListTouches(commandList);}
+D3D12CommandListTouchInfo takeD3D12CommandListTouchInfo(ID3D12CommandList* commandList){return globalD3D12ResourceTracker().takeCommandListTouchInfo(commandList);}
 void D3D12ResourceTracker::reset(){std::scoped_lock lock(g.mutex);g.entries.clear();g.commandListTouches.clear();g.frame=1;g.nextId=1;}
 
 bool installD3D12ResourceTrackingHooks(ID3D12Device* device){
@@ -158,7 +195,19 @@ bool installD3D12ResourceTrackingHooks(ID3D12Device* device){
     const auto r=MH_CreateHook(v[26],(void*)hkResourceBarrier,(void**)&origResourceBarrier);
     if(r!=MH_OK && r!=MH_ERROR_ALREADY_CREATED)return false;
     const auto enabled=MH_EnableHook(v[26]);
-    return enabled==MH_OK || enabled==MH_ERROR_ENABLED;
+    const bool legacyEnabled=enabled==MH_OK || enabled==MH_ERROR_ENABLED;
+#if defined(__ID3D12GraphicsCommandList7_INTERFACE_DEFINED__)
+    ComPtr<ID3D12GraphicsCommandList7> list7;
+    if(SUCCEEDED(list.As(&list7))&&list7){void** v7=*(void***)list7.Get();if(v7&&v7[kCommandList7BarrierVtableIndex]){const auto er=MH_CreateHook(v7[kCommandList7BarrierVtableIndex],(void*)hkEnhancedBarrier,(void**)&origEnhancedBarrier);if(er==MH_OK||er==MH_ERROR_ALREADY_CREATED){const auto ee=MH_EnableHook(v7[kCommandList7BarrierVtableIndex]);enhancedBarrierTrackingAvailable.store(ee==MH_OK||ee==MH_ERROR_ENABLED,std::memory_order_relaxed);}}}
+#endif
+    return legacyEnabled;
+}
+bool d3d12EnhancedBarrierTrackingAvailable(){
+#if defined(__ID3D12GraphicsCommandList7_INTERFACE_DEFINED__)
+    return enhancedBarrierTrackingAvailable.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
 }
 
 } // namespace udlss::gpu

@@ -19,7 +19,7 @@ where makensis >nul 2>nul || (
 )
 
 echo ========================================================================
-echo UniversalDLSS5 v0.3.2 - GitHub release builder
+echo UniversalDLSS5 v0.4.3 - GitHub release builder
 echo Builds x64 plus x86 bridge/injector, then creates NSIS + portable ZIP.
 echo NVIDIA proprietary DLSS/Streamline runtime DLLs are NOT packaged.
 echo ========================================================================

@@ -9,7 +9,12 @@ enum class NeuralExecutionApi : std::uint32_t {
 };
 
 inline constexpr NeuralExecutionApi neuralExecutionForSourceApi(std::uint32_t sourceApi) {
-    return (sourceApi == 11u || sourceApi == 12u) ? NeuralExecutionApi::D3D12 : NeuralExecutionApi::None;
+    switch(sourceApi) {
+    case 9u: case 10u: case 11u: case 12u: case 0x1000u: case 0x1001u:
+        return NeuralExecutionApi::D3D12;
+    default:
+        return NeuralExecutionApi::None;
+    }
 }
 
 } // namespace udlss

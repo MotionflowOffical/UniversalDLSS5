@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <string>
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include "../neural/external_host_protocol.hpp"
@@ -27,7 +28,7 @@ using namespace udlss::neural::hostipc;
 
 namespace {
 constexpr const char* kHostProjectId="a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kHostEngineVersion="0.3.2";
+constexpr const char* kHostEngineVersion="0.4.3";
 constexpr NVSDK_NGX_Feature kFeature=NVSDK_NGX_Feature_Reserved18;
 constexpr unsigned long long kFallbackSnippetApplicationId=0x0876232Cull;
 constexpr const char* kWidth="DLSSNR.Width"; constexpr const char* kHeight="DLSSNR.Height";
@@ -39,12 +40,13 @@ constexpr const char* kScalingRatioCallback="DLSSNRComputeScalingRatioCallback";
 constexpr const char* kColor="DLSSNR.Color"; constexpr const char* kOutput="DLSSNR.Output"; constexpr const char* kMVec="DLSSNR.MVec"; constexpr const char* kDepth="DLSSNR.Depth"; constexpr const char* kControlMask="DLSSNR.ControlMask";
 constexpr const char* kMVecScaleX="DLSSNR.MVecScaleX"; constexpr const char* kMVecScaleY="DLSSNR.MVecScaleY";
 constexpr const char* kDepthInverted="DLSSNR.DepthInverted"; constexpr const char* kEnabled="DLSSNR.Enabled"; constexpr const char* kReset="DLSSNR.Reset";
+constexpr const char* kIndicatorInvertX="DLSS.Indicator.Invert.X.Axis"; constexpr const char* kIndicatorInvertY="DLSS.Indicator.Invert.Y.Axis";
 constexpr const char* kStyle="DLSSNR.Style"; constexpr const char* kIntensity="DLSSNR.Intensity"; constexpr const char* kLocalTone="DLSSNR.LocalToneStrength";
 constexpr const char* kLocalStructure="DLSSNR.LocalStructureStrength"; constexpr const char* kSkinStructure="DLSSNR.SkinStructureStrength"; constexpr const char* kUseAutoMask="DLSSNR.UseAutoMask"; constexpr const char* kUiCorrection="DLSSNR.UICorrection";
 constexpr const char* kColorSubrectW="DLSSNR.ColorSubrectWidth"; constexpr const char* kColorSubrectH="DLSSNR.ColorSubrectHeight";
 constexpr const char* kOutputSubrectW="DLSSNR.OutputSubrectWidth"; constexpr const char* kOutputSubrectH="DLSSNR.OutputSubrectHeight";
 constexpr const char* kMVecSubrectW="DLSSNR.MVecSubrectWidth"; constexpr const char* kMVecSubrectH="DLSSNR.MVecSubrectHeight";
-constexpr const char* kDepthSubrectW="DLSSNR.DepthSubrectWidth"; constexpr const char* kDepthSubrectH="DLSSNR.DepthSubrectHeight"; constexpr const char* kControlSubrectW="DLSSNR.ControlMaskSubrectWidth"; constexpr const char* kControlSubrectH="DLSSNR.ControlMaskSubrectHeight"; constexpr const char* kPaperWhite="PaperWhiteScale"; constexpr const char* kTransferStrength="TransferStrength"; constexpr const char* kColorStrength="ColorStrength";
+constexpr const char* kDepthSubrectW="DLSSNR.DepthSubrectWidth"; constexpr const char* kDepthSubrectH="DLSSNR.DepthSubrectHeight"; constexpr const char* kControlSubrectW="DLSSNR.ControlMaskSubrectWidth"; constexpr const char* kControlSubrectH="DLSSNR.ControlMaskSubrectHeight";
 
 using SnippetInitExtFn=NVSDK_NGX_Result (NVSDK_CONV *)(unsigned long long,const wchar_t*,ID3D12Device*,NVSDK_NGX_Version,const NVSDK_NGX_Parameter*);
 using SnippetPopulateFn=NVSDK_NGX_Result (NVSDK_CONV *)(NVSDK_NGX_Parameter*);
@@ -103,8 +105,8 @@ NVSDK_NGX_Result NVSDK_CONV ratioCallback(NVSDK_NGX_Parameter* p) noexcept { if(
 struct Host {
     Shared* shared{};HANDLE mapping{},frameEvent{},stopEvent{},doneEvent{},bridgeProcess{};std::wstring session;
     ComPtr<IDXGIAdapter1> adapter;ComPtr<ID3D12Device> device;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> list;ComPtr<ID3D12Fence> sharedFence;ComPtr<ID3D12Fence> localFence;HANDLE localEvent{};UINT64 localFenceValue{};
-    ComPtr<ID3D12Resource> color,output,motion,depth,controlMask;LONG configSeen{};LONG frameSeen{};
-    NVSDK_NGX_Parameter* params{};NVSDK_NGX_Handle* feature{};bool coreInitialized{};bool reset{true};Route route{Route::None};
+    ComPtr<ID3D12Resource> color,output,motion,depth,controlMask,refinementScratch;LONG configSeen{};LONG frameSeen{};
+    NVSDK_NGX_Parameter* params{};NVSDK_NGX_Handle* feature{};NVSDK_NGX_Handle* refinementFeature{};bool coreInitialized{};bool reset{true};bool refinementUnavailable{};std::int32_t refinementFailureResult{};Route route{Route::None};
     HMODULE forwarder{},nvapiModule{};SnippetInitExtFn snInit{};SnippetPopulateFn snPopulate{};SnippetCreateFn snCreate{};SnippetEvaluateFn snEvaluate{};SnippetReleaseFn snRelease{};SnippetShutdownFn snShutdown{};bool snippetInitialized{};
     std::wstring architectureNote;
 
@@ -160,7 +162,7 @@ struct Host {
         return true;
     }
 
-    bool coreInit(){if(coreInitialized)return true;const wchar_t* paths[]={shared->runtimePath};NVSDK_NGX_FeatureCommonInfo fi{};fi.PathListInfo.Path=paths;fi.PathListInfo.Length=1;const auto r=NVSDK_NGX_D3D12_Init_with_ProjectID(kHostProjectId,NVSDK_NGX_ENGINE_TYPE_CUSTOM,kHostEngineVersion,logDir().c_str(),device.Get(),&fi,NVSDK_NGX_Version_API);if(NVSDK_NGX_FAILED(r)){setMessage(shared,PipelineStage::NgxCoreInitFailed,(int)r,L"NRHost: NGX core Project-ID initialization failed");return false;}coreInitialized=true;mark(shared,PipelineStage::NgxCoreInitialized);auto pr=NVSDK_NGX_D3D12_GetCapabilityParameters(&params);if(NVSDK_NGX_FAILED(pr)||!params){setMessage(shared,PipelineStage::NgxCoreInitFailed,(int)pr,L"NRHost: GetCapabilityParameters failed");return false;}return true;}
+    bool coreInit(){if(coreInitialized)return true;const wchar_t* paths[]={shared->runtimePath};NVSDK_NGX_FeatureCommonInfo fi{};fi.PathListInfo.Path=paths;fi.PathListInfo.Length=1;const auto r=NVSDK_NGX_D3D12_Init_with_ProjectID(kHostProjectId,NVSDK_NGX_ENGINE_TYPE_CUSTOM,kHostEngineVersion,shared->runtimePath,device.Get(),&fi,NVSDK_NGX_Version_API);if(NVSDK_NGX_FAILED(r)){setMessage(shared,PipelineStage::NgxCoreInitFailed,(int)r,L"NRHost: NGX core Project-ID initialization failed");return false;}coreInitialized=true;mark(shared,PipelineStage::NgxCoreInitialized);auto pr=NVSDK_NGX_D3D12_AllocateParameters(&params);if(NVSDK_NGX_FAILED(pr)||!params){setMessage(shared,PipelineStage::NgxCoreInitFailed,(int)pr,L"NRHost: AllocateParameters failed");return false;}return true;}
 
     void fillCreate(){params->Set(kWidth,shared->width);params->Set(kHeight,shared->height);params->Set(kInputWidth,shared->width);params->Set(kInputHeight,shared->height);params->Set(kOutputWidth,shared->width);params->Set(kOutputHeight,shared->height);params->Set(kOutputWidth2,shared->width);params->Set(kOutputHeight2,shared->height);params->Set(kUpscaling,0u);params->Set(kScale,1.0f);params->Set(kScalingRatio,1.0f);params->Set(kScalingRatioCallback,(unsigned long long)(uintptr_t)&ratioCallback);params->Set(kPreset,shared->nrPreset);params->Set(NVSDK_NGX_Parameter_PerfQualityValue,(int)NVSDK_NGX_PerfQuality_Value_Balanced);params->Set(NVSDK_NGX_Parameter_Width,shared->width);params->Set(NVSDK_NGX_Parameter_Height,shared->height);params->Set(NVSDK_NGX_Parameter_CreationNodeMask,1u);params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask,1u);}
 
@@ -191,9 +193,10 @@ struct Host {
         if(actualForwarder[0] && wcsstr(actualForwarder,L"nvngx.dll")==nullptr){setMessage(shared,PipelineStage::SnippetLoadFailed,0,L"NRHost: forwarder path lacks required nvngx.dll compatibility marker");return false;}
         mark(shared,PipelineStage::SnippetLoaded);
         const std::uint32_t discoveredAppId=app?app():0u;
-        const unsigned long long appId=discoveredAppId?discoveredAppId:kFallbackSnippetApplicationId;
+        (void)discoveredAppId;
+        const unsigned long long appId=kFallbackSnippetApplicationId;
         shared->snippetApplicationId=(UINT)appId;shared->snippetVersion=ver?ver():0;
-        const auto ir=snInit(appId,logDir().c_str(),device.Get(),NVSDK_NGX_Version_API,params);
+        const auto ir=snInit(appId,shared->runtimePath,device.Get(),NVSDK_NGX_Version_API,nullptr);
         if(NVSDK_NGX_FAILED(ir)){wchar_t msg[384]{};swprintf_s(msg,L"NRHost: core CreateFeature(18)=0x%08X; forwarder Init_Ext=0x%08X; real arch=0x%X reported=0x%X",(unsigned)coreResult,(unsigned)ir,shared->realGpuArchitecture,shared->reportedGpuArchitecture);setMessage(shared,PipelineStage::SnippetInitFailed,(int)ir,msg);return false;}
         snippetInitialized=true;
         const auto pr=snPopulate(params);
@@ -205,22 +208,54 @@ struct Host {
         feature=h;route=Route::SignedSnippet;InterlockedExchange(&shared->route,(LONG)route);mark(shared,PipelineStage::FeatureCreated);return executeAndDrain();
     }
 
-    bool configure(){InterlockedExchange(&shared->state,(LONG)State::Configuring);releaseFeature();color.Reset();output.Reset();motion.Reset();depth.Reset();controlMask.Reset();if(!device&&!findAdapter()){setMessage(shared,PipelineStage::HostRuntimeFailed,0,L"NRHost: could not create D3D12 device on the source adapter");return false;}HRESULT openHr=S_OK;if(!sharedFence){if(!openTransferred(shared->fenceHandle,IID_PPV_ARGS(&sharedFence),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated shared GPU fence handle");return false;}shared->fenceHandle=0;}
+    bool ensureRefinementScratch(){
+        if(refinementScratch)return true;
+        if(!device||!output)return false;
+        const auto desc=output->GetDesc();
+        D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CreationNodeMask=1;heap.VisibleNodeMask=1;
+        return SUCCEEDED(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&refinementScratch)));
+    }
+
+    bool createRefinementFeature(std::int32_t& result){
+        if(!beginList())return false;
+        fillCreate();NVSDK_NGX_Handle* h{};NVSDK_NGX_Result r=NVSDK_NGX_Result_Fail;
+        if(route==Route::CoreDispatch)r=NVSDK_NGX_D3D12_CreateFeature(list.Get(),kFeature,params,&h);
+        else if(route==Route::SignedSnippet&&snCreate)r=snCreate(list.Get(),kFeature,params,&h);
+        result=(std::int32_t)r;
+        if(NVSDK_NGX_FAILED(r)||!h){list->Close();return false;}
+        refinementFeature=h;
+        if(!executeAndDrain()){
+            if(route==Route::CoreDispatch)NVSDK_NGX_D3D12_ReleaseFeature(refinementFeature);else if(snRelease)snRelease(refinementFeature);
+            refinementFeature=nullptr;return false;
+        }
+        return true;
+    }
+
+    bool ensureRefinementFeature(){
+        if(refinementUnavailable)return false;
+        if(refinementFeature){shared->refinementAvailable=1;return true;}
+        std::int32_t result=0;
+        if(!ensureRefinementScratch()||!createRefinementFeature(result)){
+            refinementUnavailable=true;refinementFailureResult=result;shared->refinementAvailable=0;shared->refinementFailureResult=result;return false;
+        }
+        shared->refinementAvailable=1;shared->refinementFailureResult=0;return true;
+    }
+
+    bool configure(){InterlockedExchange(&shared->state,(LONG)State::Configuring);releaseFeature();color.Reset();output.Reset();motion.Reset();depth.Reset();controlMask.Reset();refinementScratch.Reset();refinementUnavailable=false;refinementFailureResult=0;shared->nrPassesExecuted=0;shared->refinementAvailable=0;shared->refinementFailureResult=0;if(!device&&!findAdapter()){setMessage(shared,PipelineStage::HostRuntimeFailed,0,L"NRHost: could not create D3D12 device on the source adapter");return false;}HRESULT openHr=S_OK;if(!sharedFence){if(!openTransferred(shared->fenceHandle,IID_PPV_ARGS(&sharedFence),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated shared GPU fence handle");return false;}shared->fenceHandle=0;}
         if(!openTransferred(shared->colorHandle,IID_PPV_ARGS(&color),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated color texture handle");return false;}shared->colorHandle=0;
         if(!openTransferred(shared->outputHandle,IID_PPV_ARGS(&output),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated output texture handle");return false;}shared->outputHandle=0;
         if(!openTransferred(shared->motionHandle,IID_PPV_ARGS(&motion),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated motion texture handle");return false;}shared->motionHandle=0;
         if(!openTransferred(shared->depthHandle,IID_PPV_ARGS(&depth),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated depth texture handle");return false;}shared->depthHandle=0;if(!openTransferred(shared->controlMaskHandle,IID_PPV_ARGS(&controlMask),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated control-mask texture handle");return false;}shared->controlMaskHandle=0;mark(shared,PipelineStage::HostResourcesShared);removeArchitectureCompatibility();prepareArchitectureCompatibility();if(!coreInit())return false;std::int32_t coreResult=0;if(!tryCoreCreate(coreResult)){if(!loadSnippet(coreResult))return false;}shared->failureStage=(UINT)PipelineStage::None;shared->lastResult=1;wcscpy_s(shared->message,route==Route::CoreDispatch?L"NRHost ready: feature 18 created through standard NGX core dispatch":L"NRHost ready: feature 18 created through signed-snippet fallback");InterlockedExchange(&shared->state,(LONG)State::Ready);reset=true;return true;}
 
     static D3D12_RESOURCE_BARRIER tr(ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){D3D12_RESOURCE_BARRIER x{};x.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;x.Transition.pResource=r;x.Transition.StateBefore=a;x.Transition.StateAfter=b;x.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;return x;}
-    void setFrameParams(){
-        params->Set(kColor,color.Get());params->Set(kOutput,output.Get());params->Set(kMVec,motion.Get());params->Set(kDepth,depth.Get());
+    void setFrameParams(ID3D12Resource* input,ID3D12Resource* target,bool resetHistory){
+        params->Set(kColor,input);params->Set(kOutput,target);params->Set(kMVec,motion.Get());params->Set(kDepth,depth.Get());
         params->Set(kControlMask,shared->useControlMask?controlMask.Get():static_cast<ID3D12Resource*>(nullptr));
         params->Set(kMVecScaleX,shared->motionScaleX);params->Set(kMVecScaleY,shared->motionScaleY);
-        params->Set(kDepthInverted,shared->depthInverted);params->Set(kEnabled,1u);params->Set(kReset,(reset||shared->frameReset)?1u:0u);
+        params->Set(kDepthInverted,shared->depthInverted);params->Set(kIndicatorInvertX,0u);params->Set(kIndicatorInvertY,0u);params->Set(kEnabled,1u);params->Set(kReset,resetHistory?1u:0u);
         params->Set(kStyle,shared->nrStyle);params->Set(kIntensity,shared->nrIntensity);params->Set(kLocalTone,shared->nrTone);
         params->Set(kLocalStructure,shared->nrStructure);params->Set(kSkinStructure,shared->nrSkinStructure);
         params->Set(kUseAutoMask,shared->nrAutoMask);params->Set(kUiCorrection,shared->nrUiCorrection);
-        params->Set(kPaperWhite,shared->nrPaperWhite);params->Set(kTransferStrength,shared->nrTransferStrength);params->Set(kColorStrength,shared->nrColorStrength);
         params->Set(kColorSubrectW,shared->width);params->Set(kColorSubrectH,shared->height);params->Set(kOutputSubrectW,shared->width);params->Set(kOutputSubrectH,shared->height);
         params->Set(kMVecSubrectW,shared->width);params->Set(kMVecSubrectH,shared->height);params->Set(kDepthSubrectW,shared->width);params->Set(kDepthSubrectH,shared->height);
         params->Set(kControlSubrectW,shared->width);params->Set(kControlSubrectH,shared->height);
@@ -228,10 +263,110 @@ struct Host {
 
     bool recordFallbackCopy(){if(!beginList())return false;std::array<D3D12_RESOURCE_BARRIER,2>b={tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE),tr(output.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST)};list->ResourceBarrier(2,b.data());list->CopyResource(output.Get(),color.Get());b={tr(color.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON),tr(output.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON)};list->ResourceBarrier(2,b.data());return SUCCEEDED(list->Close());}
 
-    void processFrame(){const LONG seq=InterlockedCompareExchange(&shared->frameSeq,0,0);if(seq<=frameSeen||!feature)return;frameSeen=seq;const UINT64 in=(UINT64)InterlockedCompareExchange64(&shared->inputFenceValue,0,0),out=(UINT64)InterlockedCompareExchange64(&shared->outputFenceValue,0,0);queue->Wait(sharedFence.Get(),in);bool success=false;NVSDK_NGX_Result r=NVSDK_NGX_Result_Fail;if(beginList()){std::array<D3D12_RESOURCE_BARRIER,5>b={tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),tr(motion.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),tr(depth.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),tr(controlMask.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),tr(output.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};list->ResourceBarrier(5,b.data());setFrameParams();r=route==Route::CoreDispatch?NVSDK_NGX_D3D12_EvaluateFeature(list.Get(),feature,params,nullptr):snEvaluate(list.Get(),feature,params,nullptr);if(!NVSDK_NGX_FAILED(r)){b={tr(color.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON),tr(motion.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON),tr(depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON),tr(controlMask.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON),tr(output.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON)};list->ResourceBarrier(5,b.data());if(SUCCEEDED(list->Close())){ID3D12CommandList*l[]={list.Get()};queue->ExecuteCommandLists(1,l);success=true;}}else list->Close();}
-        if(!success){recordFallbackCopy();ID3D12CommandList*l[]={list.Get()};queue->ExecuteCommandLists(1,l);}const HRESULT signalHr=queue->Signal(sharedFence.Get(),out);if(FAILED(signalHr)){setMessage(shared,PipelineStage::HostRuntimeFailed,(int)signalHr,L"NRHost: failed to enqueue output fence signal");InterlockedExchange(&shared->state,(LONG)State::Error);InterlockedExchange(&shared->completedSeq,seq);SetEvent(doneEvent);return;}shared->lastResult=(int)r;if(success){mark(shared,PipelineStage::FeatureEvaluated);shared->failureStage=(UINT)PipelineStage::None;wcscpy_s(shared->message,route==Route::CoreDispatch?L"NRHost ACTIVE: feature 18 evaluated through NGX core dispatch":L"NRHost ACTIVE: feature 18 evaluated through signed-snippet fallback");InterlockedExchange(&shared->state,(LONG)State::Active);reset=false;}else{setMessage(shared,PipelineStage::FeatureEvaluateFailed,(int)r,L"NRHost: feature 18 evaluate failed; host returned GPU passthrough output");InterlockedExchange(&shared->state,(LONG)State::Error);}InterlockedExchange(&shared->completedSeq,seq);InterlockedExchange(&shared->enqueuedSeq,seq);SetEvent(doneEvent);}
+    void processFrame(){
+        const LONG seq=InterlockedCompareExchange(&shared->frameSeq,0,0);
+        if(seq<=frameSeen||!feature)return;
+        frameSeen=seq;
+        const UINT64 in=(UINT64)InterlockedCompareExchange64(&shared->inputFenceValue,0,0);
+        const UINT64 out=(UINT64)InterlockedCompareExchange64(&shared->outputFenceValue,0,0);
+        const std::uint32_t requestedPasses=std::clamp<std::uint32_t>(shared->nrPassesRequested,1u,4u);
+        shared->nrPassesExecuted=0;
+        if(requestedPasses>1)ensureRefinementFeature();
+        queue->Wait(sharedFence.Get(),in);
 
-    void releaseFeature(){if(feature){if(route==Route::CoreDispatch)NVSDK_NGX_D3D12_ReleaseFeature(feature);else if(snRelease)snRelease(feature);feature=nullptr;}route=Route::None;InterlockedExchange(&shared->route,(LONG)Route::None);}
+        bool success=false;
+        NVSDK_NGX_Result r=NVSDK_NGX_Result_Fail;
+        std::uint32_t executedPasses=0;
+        if(beginList()){
+            std::array<D3D12_RESOURCE_BARRIER,5>b={
+                tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                tr(motion.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                tr(depth.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                tr(controlMask.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                tr(output.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
+            list->ResourceBarrier(5,b.data());
+            D3D12_RESOURCE_STATES outputState=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            D3D12_RESOURCE_STATES scratchState=D3D12_RESOURCE_STATE_COMMON;
+            setFrameParams(color.Get(),output.Get(),reset||shared->frameReset);
+            r=route==Route::CoreDispatch?NVSDK_NGX_D3D12_EvaluateFeature(list.Get(),feature,params,nullptr):snEvaluate(list.Get(),feature,params,nullptr);
+            if(!NVSDK_NGX_FAILED(r)){
+                executedPasses=1;
+                reset=false;
+                ID3D12Resource* finalResource=output.Get();
+                bool finalScratch=false;
+                if(refinementFeature&&refinementScratch&&!refinementUnavailable){
+                    for(std::uint32_t pass=2;pass<=requestedPasses;++pass){
+                        ID3D12Resource* src=finalResource;
+                        ID3D12Resource* dst=finalScratch?output.Get():refinementScratch.Get();
+                        auto& srcState=finalScratch?scratchState:outputState;
+                        auto& dstState=finalScratch?outputState:scratchState;
+                        std::array<D3D12_RESOURCE_BARRIER,2> refineBarriers={tr(src,srcState,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),tr(dst,dstState,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
+                        list->ResourceBarrier(2,refineBarriers.data());
+                        srcState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;dstState=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                        setFrameParams(src,dst,true);
+                        const auto refineResult=route==Route::CoreDispatch?NVSDK_NGX_D3D12_EvaluateFeature(list.Get(),refinementFeature,params,nullptr):snEvaluate(list.Get(),refinementFeature,params,nullptr);
+                        if(NVSDK_NGX_FAILED(refineResult)){
+                            refinementUnavailable=true;refinementFailureResult=(std::int32_t)refineResult;shared->refinementAvailable=0;shared->refinementFailureResult=refinementFailureResult;
+                            break;
+                        }
+                        r=refineResult;finalResource=dst;finalScratch=!finalScratch;++executedPasses;
+                    }
+                }
+
+                std::array<D3D12_RESOURCE_BARRIER,8> finish{};UINT n=0;
+                auto add=[&](ID3D12Resource* res,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to){if(from==to)return;finish[n++]=tr(res,from,to);};
+                if(finalResource==refinementScratch.Get()){
+                    add(refinementScratch.Get(),scratchState,D3D12_RESOURCE_STATE_COPY_SOURCE);scratchState=D3D12_RESOURCE_STATE_COPY_SOURCE;
+                    add(output.Get(),outputState,D3D12_RESOURCE_STATE_COPY_DEST);outputState=D3D12_RESOURCE_STATE_COPY_DEST;
+                    if(n)list->ResourceBarrier(n,finish.data());n=0;
+                    list->CopyResource(output.Get(),refinementScratch.Get());
+                    add(refinementScratch.Get(),scratchState,D3D12_RESOURCE_STATE_COMMON);scratchState=D3D12_RESOURCE_STATE_COMMON;
+                    add(output.Get(),outputState,D3D12_RESOURCE_STATE_COMMON);outputState=D3D12_RESOURCE_STATE_COMMON;
+                }else{
+                    add(output.Get(),outputState,D3D12_RESOURCE_STATE_COMMON);outputState=D3D12_RESOURCE_STATE_COMMON;
+                    if(refinementScratch&&scratchState!=D3D12_RESOURCE_STATE_COMMON){add(refinementScratch.Get(),scratchState,D3D12_RESOURCE_STATE_COMMON);scratchState=D3D12_RESOURCE_STATE_COMMON;}
+                }
+                add(color.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
+                add(motion.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
+                add(depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
+                add(controlMask.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
+                if(n)list->ResourceBarrier(n,finish.data());
+                if(SUCCEEDED(list->Close())){ID3D12CommandList*l[]={list.Get()};queue->ExecuteCommandLists(1,l);success=true;}
+            }else list->Close();
+        }
+
+        if(!success){
+            recordFallbackCopy();ID3D12CommandList*l[]={list.Get()};queue->ExecuteCommandLists(1,l);
+        }
+        const HRESULT signalHr=queue->Signal(sharedFence.Get(),out);
+        if(FAILED(signalHr)){
+            setMessage(shared,PipelineStage::HostRuntimeFailed,(int)signalHr,L"NRHost: failed to enqueue output fence signal");
+            InterlockedExchange(&shared->state,(LONG)State::Error);InterlockedExchange(&shared->completedSeq,seq);SetEvent(doneEvent);return;
+        }
+        shared->lastResult=(int)r;
+        shared->nrPassesExecuted=executedPasses;
+        if(success){
+            mark(shared,PipelineStage::FeatureEvaluated);shared->failureStage=(UINT)PipelineStage::None;
+            wchar_t msg[384]{};
+            if(requestedPasses>1&&executedPasses<requestedPasses){
+                swprintf_s(msg,L"NRHost ACTIVE: Feature 18 evaluated; refinement executed %u/%u passes (fallback result 0x%08X)",executedPasses,requestedPasses,(unsigned)shared->refinementFailureResult);
+            }else{
+                swprintf_s(msg,L"NRHost ACTIVE: Feature 18 evaluated through %ls (%u pass%ls)",route==Route::CoreDispatch?L"NGX core dispatch":L"signed-snippet fallback",executedPasses,executedPasses==1?L"":L"es");
+            }
+            wcsncpy_s(shared->message,msg,_TRUNCATE);InterlockedExchange(&shared->state,(LONG)State::Active);
+        }else{
+            setMessage(shared,PipelineStage::FeatureEvaluateFailed,(int)r,L"NRHost: feature 18 evaluate failed; host returned GPU passthrough output");InterlockedExchange(&shared->state,(LONG)State::Error);
+        }
+        InterlockedExchange(&shared->completedSeq,seq);InterlockedExchange(&shared->enqueuedSeq,seq);SetEvent(doneEvent);
+    }
+
+    void releaseFeature(){
+        if(refinementFeature){if(route==Route::CoreDispatch)NVSDK_NGX_D3D12_ReleaseFeature(refinementFeature);else if(snRelease)snRelease(refinementFeature);refinementFeature=nullptr;}
+        if(feature){if(route==Route::CoreDispatch)NVSDK_NGX_D3D12_ReleaseFeature(feature);else if(snRelease)snRelease(feature);feature=nullptr;}
+        refinementScratch.Reset();refinementUnavailable=false;refinementFailureResult=0;
+        if(shared){shared->refinementAvailable=0;shared->refinementFailureResult=0;shared->nrPassesExecuted=0;}
+        route=Route::None;if(shared)InterlockedExchange(&shared->route,(LONG)Route::None);
+    }
     void shutdown(){if(shared)InterlockedExchange(&shared->state,(LONG)State::Stopping);releaseFeature();if(snippetInitialized&&snShutdown&&device)snShutdown(device.Get());snippetInitialized=false;if(forwarder){FreeLibrary(forwarder);forwarder=nullptr;}removeArchitectureCompatibility();if(params){NVSDK_NGX_D3D12_DestroyParameters(params);params=nullptr;}if(coreInitialized&&device)NVSDK_NGX_D3D12_Shutdown1(device.Get());coreInitialized=false;if(localEvent){CloseHandle(localEvent);localEvent=nullptr;}if(shared){UnmapViewOfFile(shared);shared=nullptr;}if(mapping){CloseHandle(mapping);mapping=nullptr;}if(frameEvent){CloseHandle(frameEvent);frameEvent=nullptr;}if(stopEvent){CloseHandle(stopEvent);stopEvent=nullptr;}if(doneEvent){CloseHandle(doneEvent);doneEvent=nullptr;}if(bridgeProcess){CloseHandle(bridgeProcess);bridgeProcess=nullptr;}}
 };
 

@@ -9,15 +9,21 @@ REQUIRED = [
     'include/udlss/settings.hpp', 'include/udlss/shared_control.hpp', 'include/udlss/guide_quality_policy.hpp', 'include/udlss/resource_extraction_policy.hpp', 'include/udlss/game_guides_api.hpp',
     'include/udlss/native_motion_policy.hpp', 'include/udlss/camera_matrix_policy.hpp', 'include/udlss/camera_motion_math.hpp', 'include/udlss/motion_route_policy.hpp',
     'include/udlss/runtime_policy.hpp', 'include/udlss/runtime_import_policy.hpp', 'include/udlss/injection_policy.hpp', 'include/udlss/neural_scheduler_policy.hpp', 'include/udlss/renderer_selection_policy.hpp',
+    'include/udlss/renderer_route_policy.hpp', 'include/udlss/d3d12_recovery_policy.hpp', 'include/udlss/compat_neural_policy.hpp', 'include/udlss/auto_detach_policy.hpp', 'include/udlss/renderer_activity.hpp',
     'include/udlss/runtime_diagnostics.hpp', 'include/udlss/d3d12_backbuffer_policy.hpp', 'include/udlss/backend_policy.hpp', 'include/udlss/external_host_policy.hpp', 'include/udlss/controller_preferences.hpp', 'include/udlss/safe_attach_policy.hpp', 'include/udlss/guide_candidate_policy.hpp', 'include/udlss/game_guide_policy.hpp',
-    'src/controller/ui.cpp', 'src/controller/runtime_importer.cpp', 'src/controller/runtime_importer.hpp', 'src/controller/resource.h', 'src/bridge/dxgi_hooks.cpp', 'src/bridge/attach_logger.cpp', 'src/bridge/attach_logger.hpp',
+    'src/controller/ui.cpp', 'src/controller/processes.cpp', 'src/controller/processes.hpp', 'src/controller/runtime_importer.cpp', 'src/controller/runtime_importer.hpp', 'src/controller/resource.h',
+    'src/bridge/dxgi_hooks.cpp', 'src/bridge/d3d9_hooks.cpp', 'src/bridge/opengl_hooks.cpp', 'src/bridge/vulkan_hooks.cpp', 'src/bridge/hook_lifecycle.cpp', 'src/bridge/attach_logger.cpp', 'src/bridge/attach_logger.hpp',
+    'src/compat/renderer_frontend.hpp', 'src/compat/canonical_surface.cpp', 'src/compat/canonical_surface.hpp', 'src/compat/compat_dispatch.cpp', 'src/compat/compat_dispatch.hpp',
+    'src/compat/d3d10_frontend.cpp', 'src/compat/d3d10_frontend.hpp', 'src/compat/d3d9_frontend.cpp', 'src/compat/d3d9_frontend.hpp', 'src/compat/legacy_copy_ring.cpp', 'src/compat/legacy_copy_ring.hpp',
+    'src/compat/opengl_frontend.cpp', 'src/compat/opengl_frontend.hpp', 'src/compat/vulkan_frontend.cpp', 'src/compat/vulkan_frontend.hpp', 'src/compat/vulkan_abi.hpp',
     'src/gpu/d3d11_pipeline.cpp', 'src/gpu/d3d11_guide_extractor.cpp', 'src/gpu/d3d11_resource_tracker.cpp', 'src/gpu/d3d11_resource_tracker.hpp', 'src/gpu/d3d11_camera_tracker.cpp', 'src/gpu/d3d11_camera_tracker.hpp', 'src/gpu/d3d12_on12.cpp', 'src/gpu/d3d12_resource_tracker.cpp', 'src/gpu/d3d12_resource_tracker.hpp', 'src/gpu/game_temporal_guides.cpp', 'src/gpu/game_temporal_guides.hpp', 'src/gpu/nv_optical_flow.cpp',
     'src/neural/ingame_nr.cpp', 'src/neural/ngx_nr.cpp', 'src/neural/external_host.cpp', 'src/neural/external_host_protocol.hpp', 'src/neural/streamline_nr.cpp', 'src/neural/passthrough.cpp', 'src/host/main.cpp', 'src/host/nr_forwarder.cpp',
     'shaders/convert.hlsl', 'shaders/downsample.hlsl', 'shaders/flow.hlsl',
     'shaders/motion.hlsl', 'shaders/native_motion_convert.hlsl', 'shaders/camera_motion.hlsl', 'shaders/mask.hlsl', 'shaders/depth_convert.hlsl', 'shaders/post.hlsl', 'shaders/blit.hlsl',
-    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md', 'docs/GAME_GUIDES_SAFE_ATTACH.md',
+    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md', 'docs/GAME_GUIDES_SAFE_ATTACH.md', 'docs/V0.4.0_RELEASE.md', 'docs/V0.4.1_RELEASE.md', 'docs/V0.4.2_RELEASE.md', 'docs/V0.4.3_RELEASE.md', 'docs/images/half-sword.jpg', 'docs/images/cod4-modern-warfare.jpg', 'docs/images/cyberpunk-2077.jpg', 'docs/images/stray.jpg', 'docs/images/the-long-drive.jpg',
     'tests/guide_quality_policy_tests.cpp', 'tests/ingame_nr_policy_tests.cpp', 'tests/ingame_nr_parameters_tests.cpp', 'tests/streamline_mount_policy_tests.cpp', 'tests/motion_route_policy_tests.cpp', 'tests/camera_motion_math_tests.cpp', 'tests/d3d11_direct_mount_motion_tests.cpp', 'tests/d3d11_depth_tracking_tests.cpp', 'tests/camera_matrix_policy_tests.cpp', 'tests/native_motion_policy_tests.cpp', 'tests/resource_tracker_semantic_tests.cpp', 'tests/resource_extraction_policy_tests.cpp', 'tests/runtime_diagnostics_tests.cpp', 'tests/d3d12_backbuffer_policy_tests.cpp', 'tests/backend_policy_tests.cpp',
     'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp', 'tests/runtime_import_policy_tests.cpp', 'tests/release_packaging_tests.cpp', 'tests/controller_preferences_tests.cpp', 'tests/safe_attach_policy_tests.cpp', 'tests/guide_candidate_policy_tests.cpp', 'tests/game_guide_policy_tests.cpp', 'tests/v029_architecture_wiring_tests.cpp',
+    'tests/renderer_route_policy_tests.cpp', 'tests/compat_dispatch_policy_tests.cpp', 'tests/d3d12_recovery_policy_tests.cpp', 'tests/v043_recovery_present_safe_guides_wiring_tests.cpp', 'tests/d3d10_frontend_wiring_tests.cpp', 'tests/d3d9_frontend_wiring_tests.cpp', 'tests/opengl_frontend_wiring_tests.cpp', 'tests/vulkan_frontend_wiring_tests.cpp', 'tests/v040_compatibility_wiring_tests.cpp', 'tests/v041_external_host_contract_tests.cpp', 'tests/v041_version_wiring_tests.cpp', 'tests/v042_recovery_transport_wiring_tests.cpp', 'tests/v042_version_wiring_tests.cpp', 'tests/auto_detach_policy_tests.cpp', 'tests/auto_detach_wiring_tests.cpp',
     'include/udlss/app_picker_policy.hpp', 'include/udlss/ngx_failure_policy.hpp', 'include/udlss/neural_route_policy.hpp',
     'examples/GameGuidesAdapter/README.md', 'examples/GameGuidesAdapter/template.cpp',
 ]
@@ -93,7 +99,7 @@ external_backend = (ROOT / 'src/neural/external_host.cpp').read_text(encoding='u
 host_source = (ROOT / 'src/host/main.cpp').read_text(encoding='utf-8')
 host_protocol = (ROOT / 'src/neural/external_host_protocol.hpp').read_text(encoding='utf-8')
 cmake_root = (ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
-for token in ['D3D11_RESOURCE_MISC_SHARED_NTHANDLE', 'D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX',
+for token in ['D3D11_RESOURCE_MISC_SHARED_NTHANDLE', 'D3D11_RESOURCE_MISC_SHARED',
               'CreateSharedHandle', 'UniversalDLSS5.NRHost.exe', 'WaitForMultipleObjects',
               'enqueuedSeq', 'doneEvent_']:
     if token not in external_backend:
@@ -114,9 +120,30 @@ if 'nvngx.dll_UniversalDLSS5_NRForwarder' not in cmake_root:
     fail('CMake forwarder output name must carry the nvngx.dll compatibility marker')
 if 'DuplicateHandle' not in external_backend:
     fail('external-host bridge transport must duplicate GPU handles into NRHost')
+# v0.4.1 external-host contract must match the proven in-process Feature-18 path.
+if 'D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX' in external_backend:
+    fail('v0.4.1 external-host textures must not use keyed-mutex sharing')
+if 'D3D11_RESOURCE_MISC_SHARED|D3D11_RESOURCE_MISC_SHARED_NTHANDLE' not in external_backend:
+    fail('v0.4.1 external-host textures must use SHARED|SHARED_NTHANDLE')
+if 'CreateSharedHandle(nullptr,GENERIC_ALL,nullptr,&hnd)' not in external_backend:
+    fail('v0.4.1 external-host texture handles must be created with GENERIC_ALL')
+if 'ctx11_->Flush()' not in external_backend:
+    fail('v0.4.1 external-host producer fence signal must be flushed')
+if 'STARTF_USESHOWWINDOW' not in external_backend or 'SW_HIDE' not in external_backend:
+    fail('v0.4.1 NRHost launch must be explicitly hidden')
+if 'NVSDK_NGX_D3D12_AllocateParameters(&params)' not in host_source or 'NVSDK_NGX_D3D12_GetCapabilityParameters(&params)' in host_source:
+    fail('v0.4.1 NRHost must use an allocated Feature-18 parameter block')
+if 'snInit(appId,shared->runtimePath,device.Get(),NVSDK_NGX_Version_API,nullptr)' not in host_source:
+    fail('v0.4.1 NRHost signed-snippet Init_Ext contract is stale')
+for token in ['DLSS.Indicator.Invert.X.Axis', 'DLSS.Indicator.Invert.Y.Axis']:
+    if token not in host_source:
+        fail(f'v0.4.1 NRHost evaluate contract missing: {token}')
+for forbidden in ['params->Set(kPaperWhite', 'params->Set(kTransferStrength', 'params->Set(kColorStrength']:
+    if forbidden in host_source:
+        fail(f'v0.4.1 NRHost sends a non-contract generic parameter: {forbidden}')
 if 'OpenSharedHandleByName' in host_source:
     fail('external NR host must not rediscover D3D11-created GPU objects by name')
-for token in ['kAbi=4', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
+for token in ['kAbi=6', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
     if token not in host_protocol:
         fail(f'external-host protocol missing duplicated-handle field: {token}')
 for token in ['kMagic', 'kAbi', 'inputFenceValue', 'outputFenceValue', 'enqueuedSeq']:
@@ -151,15 +178,67 @@ for token in ['D3DReflect', 'classifyMatrixBindingName', 'previousViewProjection
         fail(f'v0.2.8 camera constant tracker missing: {token}')
 if 'prevPixel-currentPixel' not in camera_shader.replace(' ', ''):
     fail('v0.2.8 camera motion shader does not emit current->previous pixel vectors')
-if 'project(UniversalDLSS5 VERSION 0.3.2' not in cmake_root:
-    fail('CMake project version is not v0.3.2')
+# v0.4.2 late-attach D3D12 recovery must not share NRHost color resources through D3D11On12.
+bridge_main=(ROOT/'src/bridge/bridge_main.cpp').read_text(encoding='utf-8',errors='ignore')
+recovery_on12=(ROOT/'src/gpu/d3d12_on12.cpp').read_text(encoding='utf-8',errors='ignore')
+for rel in ['src/bridge/dxgi_hooks.cpp','src/bridge/d3d9_hooks.cpp','src/bridge/opengl_hooks.cpp','src/bridge/vulkan_hooks.cpp']:
+    hook_text=(ROOT/rel).read_text(encoding='utf-8',errors='ignore')
+    if 'noteRendererActivity' not in hook_text:
+        fail(f'v0.4.2 renderer heartbeat missing from {rel}')
+if 'D3D12_HEAP_FLAG_SHARED' not in recovery_on12 or 'OpenSharedResource1' not in recovery_on12 or 'D3D11CreateDevice' not in recovery_on12:
+    fail('v0.4.2 D3D12 recovery shared D3D12/D3D11 transport is incomplete')
+if 'waitRecoveryD3D11' not in recovery_on12:
+    fail('v0.4.2 D3D12 recovery does not prove D3D11 completion before post-copy')
+if 'private D3D12 recovery queue' in recovery_on12:
+    fail('v0.4.2 must not recreate the discarded private recovery queue')
+if 'shouldAutoDetach' not in bridge_main or 'processHasTopLevelWindow' not in bridge_main:
+    fail('v0.4.2 automatic target-exit detach wiring is incomplete')
+
+# v0.4.3 UE5 recovery lifetime isolation + volatile provider-guide snapshots.
+# Late-attached D3D12 recovery may observe short-lived Streamline motion/depth only
+# by copying them immediately into injector-owned resources. Game-owned transient
+# resources must still not survive the provider hook.
+dxgi_hooks=(ROOT/'src/bridge/dxgi_hooks.cpp').read_text(encoding='utf-8',errors='ignore')
+guides_cpp=(ROOT/'src/gpu/game_temporal_guides.cpp').read_text(encoding='utf-8',errors='ignore')
+guides_hpp=(ROOT/'src/gpu/game_temporal_guides.hpp').read_text(encoding='utf-8',errors='ignore')
+tracker12=(ROOT/'src/gpu/d3d12_resource_tracker.cpp').read_text(encoding='utf-8',errors='ignore')
+for token in ['const bool retainGameTemporalResources=provenQueue&&!recoveryMode', 'GameTemporalGuideCaptureMode::SnapshotOnly', 'setD3D12SemanticResourceTrackingEnabled(retainGameTemporalResources)', 'probeGameGuideHooks(c)', 'if(recoveryMode)gpu::releaseCapturedGameTemporalGuides()']:
+    if token not in dxgi_hooks:
+        fail(f'v0.4.3 recovery guide/lifetime policy missing from DXGI route: {token}')
+for token in ['SnapshotOnly', 'snapshotOwned']:
+    if token not in guides_hpp:
+        fail(f'v0.4.3 recovery snapshot guide declarations missing: {token}')
+for token in ['snapshotVolatileD3D12Guide', 'sl::eOnlyValidNow', 'sl::eValidUntilEvaluate', 'sl::eValidUntilPresent', 'incoming.snapshotOwned', 'g_snapshotLifetime', 'g_snapshotPool']:
+    if token not in guides_cpp:
+        fail(f'v0.4.3 volatile recovery snapshot path missing: {token}')
+for token in ['stageRecoveryGuide', 'RecoveryGuideSurface', 'captured.validUntilPresent||captured.snapshotOwned', '&externalGuide']:
+    if token not in recovery_on12:
+        fail(f'v0.4.3 recovery-owned guide staging missing: {token}')
+for token in ['semanticResourceTrackingEnabled', 'g.entries.clear()']:
+    if token not in tracker12:
+        fail(f'v0.4.3 D3D12 semantic lifetime release missing: {token}')
+
+# External NRHost must carry the selected pass count and execute the same-frame
+# reset-only refinement chain instead of silently collapsing 2x-4x to one pass.
+for token in ['kAbi=6', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
+    if token not in host_protocol:
+        fail(f'v0.4.3 external-host multipass protocol missing: {token}')
+for token in ['nrPassesRequested=st.neuralPassesRequested', 'st.neuralPassesExecuted=shared_->nrPassesExecuted']:
+    if token not in external_backend:
+        fail(f'v0.4.3 external-host multipass bridge wiring missing: {token}')
+for token in ['refinementFeature', 'refinementScratch', 'ensureRefinementFeature', 'for(std::uint32_t pass=2;pass<=requestedPasses;++pass)', 'shared->nrPassesExecuted=executedPasses']:
+    if token not in host_source:
+        fail(f'v0.4.3 NRHost refinement chain missing: {token}')
+
+if 'project(UniversalDLSS5 VERSION 0.4.3' not in cmake_root:
+    fail('CMake project version is not v0.4.3')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 19' not in shared:
-    fail('HDR/driver diagnostics layout must use control ABI 19')
+if 'kControlAbi = 20' not in shared:
+    fail('v0.4.0 renderer/driver diagnostics layout must use control ABI 20')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')
@@ -293,7 +372,7 @@ present_queue = (ROOT / 'include/udlss/present_queue_policy.hpp').read_text(enco
 for token in ['PresentQueueProofState', 'observePresentQueueEvidence', 'presentQueueTrusted']:
     if token not in present_queue:
         fail(f'v0.3.1 present-queue proof policy missing: {token}')
-for token in ['registerSwapchainBackbuffers', 'takeD3D12CommandListTouches', 'presentQueueTrusted', 'provenQueue']:
+for token in ['registerSwapchainBackbuffers', 'takeD3D12CommandListTouchInfo', 'presentQueueTrusted', 'provenQueue']:
     if token not in bridge_hooks:
         fail(f'v0.3.1 proven D3D12 presentation queue wiring missing: {token}')
 if 'recentQueue' in bridge_hooks:
@@ -303,7 +382,7 @@ for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'C
         fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
 if 'CreateWrappedResource(bb.Get()' in on12:
     fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
-for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.3.2']:
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.4.3']:
     if token not in attach_logger:
         fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 
@@ -333,6 +412,23 @@ importer = (ROOT / 'src/controller/runtime_importer.cpp').read_text(encoding='ut
 for token in ['WinVerifyTrust', 'WTHelperGetProvSignerFromChain', 'IMAGE_FILE_MACHINE_AMD64', 'runtimeImportKind', 'NVIDIA']:
     if token not in importer:
         fail(f'secure NVIDIA runtime importer missing: {token}')
+
+# v0.4.0 renderer compatibility surfaces must ship as one coherent release.
+renderer_route = (ROOT / 'include/udlss/renderer_route_policy.hpp').read_text(encoding='utf-8')
+compat_dispatch = (ROOT / 'src/compat/compat_dispatch.cpp').read_text(encoding='utf-8')
+process_scan = (ROOT / 'src/controller/processes.cpp').read_text(encoding='utf-8')
+release_040 = (ROOT / 'docs/V0.4.0_RELEASE.md').read_text(encoding='utf-8')
+for token in ['NativeD3D11', 'NativeD3D12', 'ModernD3D12Recovery', 'CompatD3D10', 'CompatD3D9Ex', 'CompatD3D9Classic', 'CompatOpenGL', 'CompatVulkan']:
+    if token not in renderer_route:
+        fail(f'v0.4.0 renderer route missing: {token}')
+for token in ['d3d9.dll', 'd3d10.dll', 'd3d11.dll', 'd3d12.dll', 'opengl32.dll', 'vulkan-1.dll']:
+    if token not in process_scan:
+        fail(f'v0.4.0 renderer module discovery missing: {token}')
+if 'routeNeedsCompatDispatch' not in compat_dispatch or 'Compatibility dispatcher rejected a native or unsupported renderer route' not in compat_dispatch:
+    fail('v0.4.0 compatibility dispatcher no longer proves native-route isolation')
+for token in ['Half Sword', 'Call of Duty 4', '32-bit', 'Vulkan', 'OpenGL']:
+    if token not in release_040:
+        fail(f'v0.4.0 release notes missing compatibility coverage: {token}')
 
 readme = (ROOT / 'README.md').read_text(encoding='utf-8')
 for token in ['Import NVIDIA SDK', 'nvngx_dlssnr.dll', 'antivirus', 'BUILD_RELEASE.bat']:

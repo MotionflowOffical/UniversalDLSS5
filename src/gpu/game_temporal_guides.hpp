@@ -10,6 +10,8 @@
 
 namespace udlss::gpu {
 
+enum class GameTemporalGuideCaptureMode : std::uint32_t { Disabled=0, PresentSafeOnly=1, SnapshotOnly=2, Full=3 };
+
 struct CapturedGameGuides {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> depth11;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> motion11;
@@ -27,6 +29,7 @@ struct CapturedGameGuides {
     bool motionConventionKnown{};
     bool cameraCut{};
     bool validUntilPresent{};
+    bool snapshotOwned{};
     std::uint32_t confidence{};
     GameGuideSource source{GameGuideSource::None};
     std::wstring provider;
@@ -36,11 +39,16 @@ struct CapturedGameGuides {
 };
 
 bool installGameTemporalGuideHooks();
+void releaseCapturedGameTemporalGuides();
 void resetGameTemporalGuides();
 CapturedGameGuides snapshotGameTemporalGuides(ID3D11Device* device,std::uint64_t nowMs);
 CapturedGameGuides snapshotGameTemporalGuides(ID3D12Device* device,std::uint64_t nowMs);
 void setGameGuideCaptureSuppressed(bool value);
 bool gameGuideCaptureSuppressed();
+void setGameTemporalGuideCaptureEnabled(bool value);
+bool gameTemporalGuideCaptureEnabled();
+void setGameTemporalGuideCaptureMode(GameTemporalGuideCaptureMode mode);
+GameTemporalGuideCaptureMode gameTemporalGuideCaptureMode();
 
 class GameGuideCaptureGuard {
 public:

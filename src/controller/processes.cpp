@@ -49,6 +49,25 @@ std::wstring fileVersionString(const std::wstring& path,const wchar_t* field) {
     return {};
 }
 
+
+std::uint32_t rendererModuleMask(DWORD pid,bool* hasDxgi=nullptr){
+    std::uint32_t mask=AppRendererNone;
+    bool dxgi=false;
+    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,pid);
+    if(snap==INVALID_HANDLE_VALUE){if(hasDxgi)*hasDxgi=false;return mask;}
+    MODULEENTRY32W m{sizeof(m)};
+    if(Module32FirstW(snap,&m)){do{
+        const auto* n=m.szModule;
+        if(_wcsicmp(n,L"dxgi.dll")==0) dxgi=true;
+        else if(_wcsicmp(n,L"d3d9.dll")==0) mask|=AppRendererD3D9;
+        else if(_wcsicmp(n,L"d3d10.dll")==0||_wcsicmp(n,L"d3d10_1.dll")==0) mask|=AppRendererD3D10;
+        else if(_wcsicmp(n,L"d3d11.dll")==0) mask|=AppRendererD3D11;
+        else if(_wcsicmp(n,L"d3d12.dll")==0) mask|=AppRendererD3D12;
+        else if(_wcsicmp(n,L"opengl32.dll")==0) mask|=AppRendererOpenGL;
+        else if(_wcsicmp(n,L"vulkan-1.dll")==0) mask|=AppRendererVulkan;
+    }while(Module32NextW(snap,&m));}
+    CloseHandle(snap);if(hasDxgi)*hasDxgi=dxgi;return mask;
+}
 std::wstring friendlyName(const ProcessInfo& p) {
     auto value=fileVersionString(p.path,L"FileDescription");
     if(value.empty()) value=fileVersionString(p.path,L"ProductName");
@@ -80,7 +99,7 @@ std::vector<ProcessInfo> enumerateProcesses(){
                 i.blocksThirdPartyModules=blocksThirdPartyModules({sig.MicrosoftSignedOnly!=0,sig.StoreSignedOnly!=0});
             CloseHandle(p);
         }
-        i.hasDxgi=moduleLoaded(i.pid,L"dxgi.dll"); out.push_back(std::move(i));
+        i.rendererModules=rendererModuleMask(i.pid,&i.hasDxgi); out.push_back(std::move(i));
     }while(Process32NextW(s,&e));} CloseHandle(s);
     std::sort(out.begin(),out.end(),[](auto&a,auto&b){int c=_wcsicmp(a.name.c_str(),b.name.c_str());return c==0?a.pid<b.pid:c<0;}); return out;
 }
@@ -89,7 +108,7 @@ std::vector<ApplicationInfo> enumerateApplications() {
     const auto all=enumerateProcesses();
     std::vector<AppPickerProcess> picker;
     picker.reserve(all.size());
-    for(const auto& p:all) picker.push_back({p.pid,p.parentPid,p.name,p.path,p.accessible,p.visibleTopLevel,p.hasDxgi,p.blocksThirdPartyModules});
+    for(const auto& p:all) picker.push_back({p.pid,p.parentPid,p.name,p.path,p.accessible,p.visibleTopLevel,p.hasDxgi,p.blocksThirdPartyModules,p.rendererModules});
     const auto groups=groupVisibleApplications(picker);
     std::unordered_map<DWORD,const ProcessInfo*> byPid;
     for(const auto& p:all) byPid.emplace(p.pid,&p);
@@ -102,10 +121,12 @@ std::vector<ApplicationInfo> enumerateApplications() {
         app.root=*it->second;
         app.root.hasDxgi=group.anyDxgi;
         app.root.blocksThirdPartyModules=group.blocksThirdPartyModules;
+        app.root.rendererModules=group.rendererModules;
         app.displayName=friendlyName(app.root);
         app.processCount=group.processCount;
         app.visibleWindowCount=group.visibleWindowCount;
         app.anyDxgi=group.anyDxgi;
+        app.rendererModules=group.rendererModules;
         app.blocksThirdPartyModules=group.blocksThirdPartyModules;
         out.push_back(std::move(app));
     }

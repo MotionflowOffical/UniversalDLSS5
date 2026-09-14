@@ -104,7 +104,7 @@ inline constexpr bool hasPipelineStage(std::uint64_t mask, PipelineStage stage) 
 inline const wchar_t* pipelineStageLabel(PipelineStage stage) {
     switch(stage) {
     case PipelineStage::BridgeInjected: return L"Bridge injected";
-    case PipelineStage::HooksInstalled: return L"DXGI hooks installed";
+    case PipelineStage::HooksInstalled: return L"Graphics hooks installed";
     case PipelineStage::PresentObserved: return L"Present observed";
     case PipelineStage::SourceApiDetected: return L"Source graphics API detected";
     case PipelineStage::NeuralD3D12Ready: return L"D3D12 neural device/queue";
@@ -118,7 +118,7 @@ inline const wchar_t* pipelineStageLabel(PipelineStage stage) {
     case PipelineStage::HostStarted: return L"External NR host started";
     case PipelineStage::HostConnected: return L"External NR host connected";
     case PipelineStage::HostResourcesShared: return L"Host GPU resources shared";
-    case PipelineStage::HookInstallFailed: return L"DXGI hooks installed";
+    case PipelineStage::HookInstallFailed: return L"Graphics hooks installed";
     case PipelineStage::SourceApiUnsupported: return L"Source graphics API detected";
     case PipelineStage::QueueCaptureFailed: return L"D3D12 command queue captured";
     case PipelineStage::NeuralD3D12InitFailed: return L"D3D12 neural device/queue";

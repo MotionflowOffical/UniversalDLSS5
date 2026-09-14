@@ -8,6 +8,15 @@
 
 namespace udlss {
 
+enum AppRendererModule : std::uint32_t {
+    AppRendererNone=0, AppRendererD3D9=1u<<0, AppRendererD3D10=1u<<1, AppRendererD3D11=1u<<2,
+    AppRendererD3D12=1u<<3, AppRendererOpenGL=1u<<4, AppRendererVulkan=1u<<5,
+};
+
+inline constexpr bool shouldAttachRendererProcess(bool isRoot,bool hasDxgi,std::uint32_t rendererModules) noexcept {
+    return isRoot || hasDxgi || rendererModules!=AppRendererNone;
+}
+
 struct AppPickerProcess {
     std::uint32_t pid{};
     std::uint32_t parentPid{};
@@ -17,6 +26,7 @@ struct AppPickerProcess {
     bool visibleTopLevel{};
     bool hasDxgi{};
     bool blocksThirdPartyModules{};
+    std::uint32_t rendererModules{};
 };
 
 struct AppPickerGroup {
@@ -27,6 +37,7 @@ struct AppPickerGroup {
     std::size_t visibleWindowCount{};
     bool anyDxgi{};
     bool blocksThirdPartyModules{};
+    std::uint32_t rendererModules{};
 };
 
 inline std::wstring appIdentityKey(const std::wstring& path,const std::wstring& name) {
@@ -74,6 +85,7 @@ inline std::vector<AppPickerGroup> groupVisibleApplications(const std::vector<Ap
             if(appIdentityKey(p.path,p.name)!=a.key) continue;
             ++a.group.processCount;
             a.group.anyDxgi = a.group.anyDxgi || p.hasDxgi;
+            a.group.rendererModules |= p.rendererModules;
             a.group.blocksThirdPartyModules = a.group.blocksThirdPartyModules || p.blocksThirdPartyModules;
         }
 

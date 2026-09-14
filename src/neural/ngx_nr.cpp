@@ -27,7 +27,7 @@ namespace udlss::neural {
 #ifdef UDLSS_WITH_NGX_NR
 namespace {
 constexpr const char* kProjectId = "a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kEngineVersion = "0.3.2";
+constexpr const char* kEngineVersion = "0.4.3";
 constexpr NVSDK_NGX_Feature kFeatureDLSSNR = NVSDK_NGX_Feature_Reserved18;
 constexpr std::size_t kFrameSlots = 8;
 constexpr std::size_t kInitialFrameSlots = 3;

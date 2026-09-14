@@ -1,4 +1,5 @@
 #include "udlss/hook_quiescence.hpp"
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -10,14 +11,42 @@ int main() {
 
     // A hook that was already executing when detach begins must keep teardown
     // blocked until the hook returns.
+    std::atomic<bool> entered{false};
+    std::atomic<bool> workerError{false};
     std::thread active([&] {
         udlss::HookQuiescence::Scope scope(q);
-        if (!scope.customWorkAllowed()) std::exit(2);
+        if (!scope.customWorkAllowed()) {
+            workerError.store(true, std::memory_order_release);
+            entered.store(true, std::memory_order_release);
+            return;
+        }
+        entered.store(true, std::memory_order_release);
         std::this_thread::sleep_for(30ms);
     });
-    std::this_thread::sleep_for(5ms);
+
+    // Do not use a fixed sleep as a proxy for thread scheduling.  Windows can
+    // legitimately leave the worker unscheduled for several milliseconds,
+    // which made this test report a false quiescence failure and then abort
+    // while destroying a still-joinable std::thread.
+    const auto enteredDeadline = std::chrono::steady_clock::now() + 1s;
+    while (!entered.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < enteredDeadline) {
+        std::this_thread::yield();
+    }
+    if (!entered.load(std::memory_order_acquire)) {
+        active.join();
+        std::cerr << "hook worker did not enter scope before timeout\n";
+        return 1;
+    }
+    if (workerError.load(std::memory_order_acquire)) {
+        active.join();
+        std::cerr << "hook worker unexpectedly rejected custom work before unload\n";
+        return 1;
+    }
+
     q.beginUnload();
     if (q.waitForIdle(5ms)) {
+        active.join();
         std::cerr << "detach incorrectly considered an active hook quiescent\n";
         return 1;
     }

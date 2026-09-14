@@ -9,7 +9,7 @@ struct RendererCandidate {
     std::uint32_t pid{};
     std::uint32_t width{};
     std::uint32_t height{};
-    std::uint32_t api{}; // 11 or 12
+    std::uint32_t api{}; // GraphicsApi numeric value
     float fps{};
     std::uint64_t lastTickMs{};
     bool root{};
@@ -27,6 +27,10 @@ inline std::uint64_t rendererScore(const RendererCandidate& c) {
     std::uint64_t score=pixels;
     if(c.api==12) score+=1'500'000ull;
     else if(c.api==11) score+=500'000ull;
+    else if(c.api==10) score+=300'000ull;
+    else if(c.api==9) score+=200'000ull;
+    else if(c.api==0x1001u) score+=350'000ull;
+    else if(c.api==0x1000u) score+=250'000ull;
     if(c.root) score+=600'000ull;
     if(c.processing) score+=250'000ull;
     if(c.neuralActive) score+=250'000ull;

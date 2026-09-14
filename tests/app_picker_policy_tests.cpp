@@ -7,8 +7,8 @@ using namespace udlss;
 
 int main() {
     std::vector<AppPickerProcess> p{
-        {100, 10, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  true,  false, false},
-        {101,100, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  false, true,  false},
+        {100, 10, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  true,  false, false, AppRendererD3D11},
+        {101,100, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  false, true,  false, AppRendererD3D12},
         {102,100, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  false, false, false},
         {103,100, L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", true,  true,  false, false},
         {200, 20, L"wallpaper64.exe", L"C:\\Steam\\wallpaper_engine\\wallpaper64.exe", true, true, true, false},
@@ -26,6 +26,7 @@ int main() {
     assert(brave->processCount == 4);
     assert(brave->visibleWindowCount == 2);
     assert(brave->anyDxgi);
+    assert(brave->rendererModules == (AppRendererD3D11 | AppRendererD3D12));
     assert(!brave->blocksThirdPartyModules);
 
     const auto* wallpaper = findApplicationGroup(groups, L"C:\\Steam\\wallpaper_engine\\wallpaper64.exe");

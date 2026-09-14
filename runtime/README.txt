@@ -1,10 +1,13 @@
-UniversalDLSS5 v0.3.2 NVIDIA runtime folder
+UniversalDLSS5 v0.4.3 NVIDIA runtime folder
 ===========================================
 
 This directory is intentionally shipped WITHOUT NVIDIA proprietary runtime DLLs.
 
 Required for the direct signed Feature-18 DLSS Neural Rendering route:
   nvngx_dlssnr.dll
+
+32-bit target games use UniversalDLSS5.Bridge32.dll and route Feature 18 through
+the x64 UniversalDLSS5.NRHost.exe. The NVIDIA runtime remains an x64 binary.
 
 optional Streamline DLSS-NR route when a complete matching stack is available:
   sl.interposer.dll

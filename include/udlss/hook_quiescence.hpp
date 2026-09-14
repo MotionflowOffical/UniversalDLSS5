@@ -3,8 +3,13 @@
 #include <chrono>
 #include <cstdint>
 #include <thread>
+#include "renderer_route_policy.hpp"
 
 namespace udlss {
+
+inline constexpr DetachMode detachDecision(bool hooksDisabled, bool quiesced) noexcept {
+    return (hooksDisabled && quiesced) ? DetachMode::Unloaded : DetachMode::DetachedResident;
+}
 
 // Tracks bridge detours that are already executing while Detach disables the
 // hook entry points.  Teardown must never destroy pipeline state or MinHook

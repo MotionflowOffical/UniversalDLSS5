@@ -3,11 +3,14 @@
 #include <MinHook.h>
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <string_view>
 #include <utility>
 #include <limits>
+#include <vector>
+#include <array>
 
 #ifdef UDLSS_WITH_STREAMLINE
 #include <sl.h>
@@ -22,7 +25,11 @@ namespace udlss::gpu {
 namespace {
 std::mutex g_mutex;
 CapturedGameGuides g_capture;
+std::vector<ComPtr<ID3D12Resource>> g_snapshotLifetime;
+std::vector<ComPtr<ID3D12Resource>> g_snapshotPool;
 thread_local bool g_suppressed=false;
+std::atomic_bool g_captureEnabled{true};
+std::atomic<GameTemporalGuideCaptureMode> g_captureMode{GameTemporalGuideCaptureMode::Full};
 
 bool sameComObject(IUnknown* a,IUnknown* b){
     if(!a||!b)return false;
@@ -38,8 +45,19 @@ void describe12(ID3D12Resource* tex,DXGI_FORMAT& format,std::uint32_t& width,std
     if(!tex)return;const auto d=tex->GetDesc();format=d.Format;width=(std::uint32_t)d.Width;height=d.Height;
 }
 
+bool sameSnapshotDesc(const D3D12_RESOURCE_DESC& a,const D3D12_RESOURCE_DESC& b){
+    return a.Dimension==b.Dimension&&a.Alignment==b.Alignment&&a.Width==b.Width&&a.Height==b.Height&&
+           a.DepthOrArraySize==b.DepthOrArraySize&&a.MipLevels==b.MipLevels&&a.Format==b.Format&&
+           a.SampleDesc.Count==b.SampleDesc.Count&&a.SampleDesc.Quality==b.SampleDesc.Quality&&a.Layout==b.Layout&&a.Flags==b.Flags;
+}
+
 void mergeCapture(CapturedGameGuides incoming){
-    if(!incoming)return;
+    if(!incoming||!g_captureEnabled.load(std::memory_order_relaxed))return;
+    const auto mode=g_captureMode.load(std::memory_order_relaxed);
+    if(mode==GameTemporalGuideCaptureMode::Disabled)return;
+    if(mode==GameTemporalGuideCaptureMode::PresentSafeOnly &&
+       (incoming.source!=GameGuideSource::Streamline || !incoming.validUntilPresent))return;
+    if(mode==GameTemporalGuideCaptureMode::SnapshotOnly && !incoming.snapshotOwned)return;
     std::scoped_lock lock(g_mutex);
     const auto inPriority=guideSourcePriority(incoming.source),curPriority=guideSourcePriority(g_capture.source);
     const bool newer=incoming.capturedTickMs>=g_capture.capturedTickMs;
@@ -82,9 +100,52 @@ PFun_slSetConstants* g_origSlSetConstants{};
 PFun_slEvaluateFeature* g_origSlEvaluateFeature{};
 struct SlConstantsSnapshot { float sx{1},sy{1};bool depthInverted{true},depthKnown{},reset{};std::uint64_t tick{}; } g_slConstants;
 
-void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation){
-    if(g_suppressed||!tag.resource||!tag.resource->native)return;
+bool snapshotVolatileD3D12Guide(ID3D12Resource* source,D3D12_RESOURCE_STATES sourceState,sl::CommandBuffer* cmd,ComPtr<ID3D12Resource>& out){
+    if(!source||!cmd)return false;
+    auto* list=reinterpret_cast<ID3D12GraphicsCommandList*>(cmd);
+    ComPtr<ID3D12Device> device;if(FAILED(source->GetDevice(IID_PPV_ARGS(&device)))||!device)return false;
+    const auto desc=source->GetDesc();
+    if(desc.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||desc.SampleDesc.Count!=1)return false;
+    D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CreationNodeMask=1;heap.VisibleNodeMask=1;
+    ComPtr<ID3D12Resource> snapshot;bool reusedSnapshot=false;
+    {
+        std::scoped_lock lock(g_mutex);
+        for(auto it=g_snapshotPool.begin();it!=g_snapshotPool.end();++it){
+            if(!*it||!sameSnapshotDesc((*it)->GetDesc(),desc))continue;
+            ComPtr<ID3D12Device> owner;if(FAILED((*it)->GetDevice(IID_PPV_ARGS(&owner)))||!sameComObject(owner.Get(),device.Get()))continue;
+            snapshot=*it;g_snapshotPool.erase(it);reusedSnapshot=true;break;
+        }
+    }
+    if(!snapshot&&FAILED(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&snapshot))))return false;
+    if(!snapshot)return false;
+    if(snapshot->GetDesc().Dimension==D3D12_RESOURCE_DIMENSION_UNKNOWN)return false;
+    std::array<D3D12_RESOURCE_BARRIER,4> barriers{};UINT count=0;
+    const bool transitionSource=(sourceState&D3D12_RESOURCE_STATE_COPY_SOURCE)==0;
+    if(transitionSource){auto&b=barriers[count++];b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition.pResource=source;b.Transition.StateBefore=sourceState;b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;}
+    if(reusedSnapshot){auto&b=barriers[count++];b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition.pResource=snapshot.Get();b.Transition.StateBefore=D3D12_RESOURCE_STATE_COMMON;b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_DEST;b.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;}
+    if(count)list->ResourceBarrier(count,barriers.data());
+    list->CopyResource(snapshot.Get(),source);
+    count=0;
+    {auto&b=barriers[count++];b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition.pResource=snapshot.Get();b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;b.Transition.StateAfter=D3D12_RESOURCE_STATE_COMMON;b.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;}
+    if(transitionSource){auto&b=barriers[count++];b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition.pResource=source;b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.StateAfter=sourceState;b.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;}
+    list->ResourceBarrier(count,barriers.data());
+    {std::scoped_lock lock(g_mutex);g_snapshotLifetime.push_back(snapshot);}
+    out=std::move(snapshot);return true;
+}
+
+void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuffer* cmd){
+    if(g_suppressed||!g_captureEnabled.load(std::memory_order_relaxed)||!tag.resource||!tag.resource->native)return;
     if(tag.type!=sl::kBufferTypeDepth && tag.type!=sl::kBufferTypeMotionVectors)return;
+    const auto mode=g_captureMode.load(std::memory_order_relaxed);
+    if(mode==GameTemporalGuideCaptureMode::Disabled)return;
+    // PresentSafeOnly retains only resources whose provider explicitly promises
+    // lifetime through Present. SnapshotOnly is used by late-attached D3D12
+    // recovery: volatile Streamline resources are copied immediately into
+    // injector-owned resources on the game's own command list, so no transient
+    // engine resource reference survives the hook call.
+    if(mode==GameTemporalGuideCaptureMode::PresentSafeOnly && tag.lifecycle!=sl::eValidUntilPresent)return;
+    const bool snapshotLifecycle=tag.lifecycle==sl::eOnlyValidNow || tag.lifecycle==sl::eValidUntilEvaluate || tag.lifecycle==sl::eValidUntilPresent;
+    if(mode==GameTemporalGuideCaptureMode::SnapshotOnly && (!snapshotLifecycle||!cmd))return;
     CapturedGameGuides c{};c.source=GameGuideSource::Streamline;c.provider=L"Streamline game tags";c.capturedTickMs=GetTickCount64();
     c.validUntilPresent=tag.lifecycle==sl::eValidUntilPresent;
     c.confidence=c.validUntilPresent?100u:(localEvaluation?94u:82u);
@@ -98,9 +159,15 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation){
         else{c.motion11=t11;c.motionFormat=fmt;c.motionWidth=w;c.motionHeight=h;}
     }else if(SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&t12)))){
         DXGI_FORMAT fmt{};std::uint32_t w{},h{};describe12(t12.Get(),fmt,w,h);if(nativeFormat!=DXGI_FORMAT_UNKNOWN)fmt=nativeFormat;if(extent.width&&extent.height){w=extent.width;h=extent.height;}
+        if(tag.resource->state==std::numeric_limits<uint32_t>::max() && mode==GameTemporalGuideCaptureMode::SnapshotOnly)return;
         const auto state=static_cast<D3D12_RESOURCE_STATES>(tag.resource->state==std::numeric_limits<uint32_t>::max()?D3D12_RESOURCE_STATE_COMMON:tag.resource->state);
-        if(tag.type==sl::kBufferTypeDepth){c.depth12=t12;c.depthFormat=fmt;c.depthState=state;c.depthWidth=w;c.depthHeight=h;}
-        else{c.motion12=t12;c.motionFormat=fmt;c.motionState=state;c.motionWidth=w;c.motionHeight=h;}
+        ComPtr<ID3D12Resource> captured=t12;
+        if(mode==GameTemporalGuideCaptureMode::SnapshotOnly){
+            ComPtr<ID3D12Resource> snapshot;if(!snapshotVolatileD3D12Guide(t12.Get(),state,cmd,snapshot))return;
+            captured=std::move(snapshot);c.snapshotOwned=true;c.validUntilPresent=true;c.provider=L"Streamline game tags (owned snapshot)";
+        }
+        if(tag.type==sl::kBufferTypeDepth){c.depth12=captured;c.depthFormat=fmt;c.depthState=c.snapshotOwned?D3D12_RESOURCE_STATE_COMMON:state;c.depthWidth=w;c.depthHeight=h;}
+        else{c.motion12=captured;c.motionFormat=fmt;c.motionState=c.snapshotOwned?D3D12_RESOURCE_STATE_COMMON:state;c.motionWidth=w;c.motionHeight=h;}
     }else return;
     {
         std::scoped_lock lock(g_mutex);
@@ -119,12 +186,12 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation){
 
 sl::Result hkSlSetTagForFrame(const sl::FrameToken& frame,const sl::ViewportHandle& viewport,const sl::ResourceTag* tags,uint32_t count,sl::CommandBuffer* cmd){
     udlss::bridge::HookCallScope call;
-    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
+    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false,cmd);
     return g_origSlSetTagForFrame(frame,viewport,tags,count,cmd);
 }
 sl::Result hkSlSetTag(const sl::ViewportHandle& viewport,const sl::ResourceTag* tags,uint32_t count,sl::CommandBuffer* cmd){
     udlss::bridge::HookCallScope call;
-    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false);
+    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++)captureSlTag(tags[i],false,cmd);
     return g_origSlSetTag(viewport,tags,count,cmd);
 }
 sl::Result hkSlSetConstants(const sl::Constants& values,const sl::FrameToken& frame,const sl::ViewportHandle& viewport){
@@ -134,7 +201,7 @@ sl::Result hkSlSetConstants(const sl::Constants& values,const sl::FrameToken& fr
 }
 sl::Result hkSlEvaluateFeature(sl::Feature feature,const sl::FrameToken& frame,const sl::BaseStructure** inputs,uint32_t count,sl::CommandBuffer* cmd){
     udlss::bridge::HookCallScope call;
-    if(call.customWorkAllowed()&&!g_suppressed&&inputs){for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType)captureSlTag(*static_cast<const sl::ResourceTag*>(base),true);}}
+    if(call.customWorkAllowed()&&!g_suppressed&&inputs){for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType)captureSlTag(*static_cast<const sl::ResourceTag*>(base),true,cmd);}}
     return g_origSlEvaluateFeature(feature,frame,inputs,count,cmd);
 }
 #endif
@@ -145,7 +212,7 @@ using Ngx11EvaluateFn=NVSDK_NGX_Result (NVSDK_CONV*)(ID3D11DeviceContext*,const 
 Ngx12EvaluateFn g_origNgx12Evaluate{};Ngx11EvaluateFn g_origNgx11Evaluate{};
 
 void captureNgx12(const NVSDK_NGX_Parameter* p){
-    if(g_suppressed||!p)return;ID3D12Resource* depth{};ID3D12Resource* motion{};
+    if(g_suppressed||!g_captureEnabled.load(std::memory_order_relaxed)||g_captureMode.load(std::memory_order_relaxed)!=GameTemporalGuideCaptureMode::Full||!p)return;ID3D12Resource* depth{};ID3D12Resource* motion{};
     p->Get(NVSDK_NGX_Parameter_Depth,&depth);p->Get(NVSDK_NGX_Parameter_MotionVectors,&motion);if(!depth&&!motion)return;
     CapturedGameGuides c{};c.source=GameGuideSource::Ngx;c.provider=L"NGX game evaluation";c.capturedTickMs=GetTickCount64();c.confidence=96;c.validUntilPresent=false;
     if(depth){c.depth12=depth;describe12(depth,c.depthFormat,c.depthWidth,c.depthHeight);c.depthState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;}
@@ -156,7 +223,7 @@ void captureNgx12(const NVSDK_NGX_Parameter* p){
     mergeCapture(std::move(c));
 }
 void captureNgx11(const NVSDK_NGX_Parameter* p){
-    if(g_suppressed||!p)return;ID3D11Resource* depth{};ID3D11Resource* motion{};
+    if(g_suppressed||!g_captureEnabled.load(std::memory_order_relaxed)||g_captureMode.load(std::memory_order_relaxed)!=GameTemporalGuideCaptureMode::Full||!p)return;ID3D11Resource* depth{};ID3D11Resource* motion{};
     p->Get(NVSDK_NGX_Parameter_Depth,&depth);p->Get(NVSDK_NGX_Parameter_MotionVectors,&motion);if(!depth&&!motion)return;
     CapturedGameGuides c{};c.source=GameGuideSource::Ngx;c.provider=L"NGX game evaluation";c.capturedTickMs=GetTickCount64();c.confidence=96;c.validUntilPresent=false;
     if(depth){ComPtr<ID3D11Texture2D> t;if(SUCCEEDED(depth->QueryInterface(IID_PPV_ARGS(&t)))){c.depth11=t;describe11(t.Get(),c.depthFormat,c.depthWidth,c.depthHeight);}}
@@ -178,9 +245,23 @@ bool createAndEnable(void* target,void* detour,void** original){
 
 void setGameGuideCaptureSuppressed(bool value){g_suppressed=value;}
 bool gameGuideCaptureSuppressed(){return g_suppressed;}
-void resetGameTemporalGuides(){std::scoped_lock lock(g_mutex);g_capture={};
+void setGameTemporalGuideCaptureMode(GameTemporalGuideCaptureMode mode){
+    const auto previous=g_captureMode.exchange(mode,std::memory_order_relaxed);
+    const bool enabled=mode!=GameTemporalGuideCaptureMode::Disabled;
+    g_captureEnabled.store(enabled,std::memory_order_relaxed);
+    if(previous!=mode){std::scoped_lock lock(g_mutex);g_capture={};for(auto& r:g_snapshotLifetime)if(r&&g_snapshotPool.size()<12)g_snapshotPool.push_back(std::move(r));g_snapshotLifetime.clear();}
+}
+GameTemporalGuideCaptureMode gameTemporalGuideCaptureMode(){return g_captureMode.load(std::memory_order_relaxed);}
+void setGameTemporalGuideCaptureEnabled(bool value){setGameTemporalGuideCaptureMode(value?GameTemporalGuideCaptureMode::Full:GameTemporalGuideCaptureMode::Disabled);}
+bool gameTemporalGuideCaptureEnabled(){return g_captureEnabled.load(std::memory_order_relaxed);}
+void releaseCapturedGameTemporalGuides(){
+    std::scoped_lock lock(g_mutex);g_capture={};
+    for(auto& r:g_snapshotLifetime)if(r&&g_snapshotPool.size()<12)g_snapshotPool.push_back(std::move(r));
+    g_snapshotLifetime.clear();
+}
+void resetGameTemporalGuides(){releaseCapturedGameTemporalGuides();
 #ifdef UDLSS_WITH_STREAMLINE
- g_slConstants={};
+ std::scoped_lock lock(g_mutex);g_slConstants={};
 #endif
 }
 CapturedGameGuides snapshotGameTemporalGuides(ID3D11Device* device,std::uint64_t nowMs){return snapshotFor11(device,nowMs);}

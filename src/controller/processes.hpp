@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include "udlss/app_picker_policy.hpp"
 namespace udlss::controller {
 enum class Arch { Unknown, X86, X64, Arm64 };
 struct ProcessInfo {
@@ -11,6 +12,7 @@ struct ProcessInfo {
     Arch arch{Arch::Unknown};
     bool accessible{};
     bool hasDxgi{};
+    std::uint32_t rendererModules{};
     bool blocksThirdPartyModules{};
     bool visibleTopLevel{};
 };
@@ -20,6 +22,7 @@ struct ApplicationInfo {
     std::size_t processCount{};
     std::size_t visibleWindowCount{};
     bool anyDxgi{};
+    std::uint32_t rendererModules{};
     bool blocksThirdPartyModules{};
 };
 std::vector<ProcessInfo> enumerateProcesses();
