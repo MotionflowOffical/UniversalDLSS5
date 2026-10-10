@@ -27,7 +27,8 @@ int main(){
  ok&=need(on12H,"RecoveryGuideSurface","injector-owned recovery guide staging surface is missing");
  ok&=need(on12,"stageRecoveryGuide","Present-safe game guides are not copied into injector-owned resources");
  ok&=need(on12,"captured.validUntilPresent||captured.snapshotOwned","staging does not recognize provider-safe or injector-owned guide lifetimes");
- ok&=need(dxgi,"if(recoveryMode)gpu::releaseCapturedGameTemporalGuides()","recovery does not release captured game-resource references before Present");
+ ok&=need(on12,"consumeCapturedGameTemporalGuides(captured.captureSequence)","recovery does not release the exact staged game-resource generation before Present");
+ ok&=forbid(dxgi,"if(recoveryMode)gpu::releaseCapturedGameTemporalGuides();","recovery still blindly clears newer captures after Present");
  ok&=need(on12,"&externalGuide","recovery neural processing does not receive the staged native guides");
  ok&=forbid(on12,"capturedPresentSafe&&!recoveryMode_","Present-safe captured guides are still hard-disabled in recovery mode");
  return ok?0:1;

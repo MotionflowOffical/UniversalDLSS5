@@ -5,6 +5,13 @@ int main(){
     assert(guideExtentAspectCompatible(1707,960,2560,1440));
     assert(guideExtentAspectCompatible(1280,720,2560,1440));
     assert(!guideExtentAspectCompatible(512,512,2560,1440));
+    // Explicit Streamline/NGX provider guides may be generated at aggressive
+    // internal resolutions (for example 1/3 linear scale). Heuristic trackers
+    // stay conservative, but provider-tagged guides must not be rejected.
+    assert(!guideExtentAspectCompatible(640,360,1920,1080));
+    assert(providerGuideExtentCompatible(640,360,1920,1080));
+    assert(providerGuideExtentCompatible(960,540,1920,1080));
+    assert(!providerGuideExtentCompatible(320,180,1920,1080));
 
     NativeMotionCandidateMeta mv{};
     mv.width=1707;mv.height=960;mv.format=MotionFormatClass::Rg16Float;

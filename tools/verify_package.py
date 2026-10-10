@@ -20,10 +20,10 @@ REQUIRED = [
     'src/neural/ingame_nr.cpp', 'src/neural/ngx_nr.cpp', 'src/neural/external_host.cpp', 'src/neural/external_host_protocol.hpp', 'src/neural/streamline_nr.cpp', 'src/neural/passthrough.cpp', 'src/host/main.cpp', 'src/host/nr_forwarder.cpp',
     'shaders/convert.hlsl', 'shaders/downsample.hlsl', 'shaders/flow.hlsl',
     'shaders/motion.hlsl', 'shaders/native_motion_convert.hlsl', 'shaders/camera_motion.hlsl', 'shaders/mask.hlsl', 'shaders/depth_convert.hlsl', 'shaders/post.hlsl', 'shaders/blit.hlsl',
-    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md', 'docs/GAME_GUIDES_SAFE_ATTACH.md', 'docs/V0.4.0_RELEASE.md', 'docs/V0.4.1_RELEASE.md', 'docs/V0.4.2_RELEASE.md', 'docs/V0.4.3_RELEASE.md', 'docs/images/half-sword.jpg', 'docs/images/cod4-modern-warfare.jpg', 'docs/images/cyberpunk-2077.jpg', 'docs/images/stray.jpg', 'docs/images/the-long-drive.jpg',
+    'runtime/README.txt', 'resources/UniversalDLSS5.ico', 'resources/UniversalDLSS5.png', 'resources/UniversalDLSS5.rc', 'docs/NVIDIA_RUNTIME_SETUP.md', 'docs/GAME_GUIDES_SAFE_ATTACH.md', 'docs/V0.4.0_RELEASE.md', 'docs/V0.4.1_RELEASE.md', 'docs/V0.4.2_RELEASE.md', 'docs/V0.4.4_RELEASE.md', 'docs/images/half-sword.jpg', 'docs/images/cod4-modern-warfare.jpg', 'docs/images/cyberpunk-2077.jpg', 'docs/images/stray.jpg', 'docs/images/the-long-drive.jpg',
     'tests/guide_quality_policy_tests.cpp', 'tests/ingame_nr_policy_tests.cpp', 'tests/ingame_nr_parameters_tests.cpp', 'tests/streamline_mount_policy_tests.cpp', 'tests/motion_route_policy_tests.cpp', 'tests/camera_motion_math_tests.cpp', 'tests/d3d11_direct_mount_motion_tests.cpp', 'tests/d3d11_depth_tracking_tests.cpp', 'tests/camera_matrix_policy_tests.cpp', 'tests/native_motion_policy_tests.cpp', 'tests/resource_tracker_semantic_tests.cpp', 'tests/resource_extraction_policy_tests.cpp', 'tests/runtime_diagnostics_tests.cpp', 'tests/d3d12_backbuffer_policy_tests.cpp', 'tests/backend_policy_tests.cpp',
     'tests/windows_build_wiring_tests.cpp', 'tests/app_picker_policy_tests.cpp', 'tests/ngx_failure_policy_tests.cpp', 'tests/neural_route_policy_tests.cpp', 'tests/external_host_policy_tests.cpp', 'tests/frame_pacing_policy_tests.cpp', 'tests/renderer_selection_policy_tests.cpp', 'tests/runtime_import_policy_tests.cpp', 'tests/release_packaging_tests.cpp', 'tests/controller_preferences_tests.cpp', 'tests/safe_attach_policy_tests.cpp', 'tests/guide_candidate_policy_tests.cpp', 'tests/game_guide_policy_tests.cpp', 'tests/v029_architecture_wiring_tests.cpp',
-    'tests/renderer_route_policy_tests.cpp', 'tests/compat_dispatch_policy_tests.cpp', 'tests/d3d12_recovery_policy_tests.cpp', 'tests/v043_recovery_present_safe_guides_wiring_tests.cpp', 'tests/d3d10_frontend_wiring_tests.cpp', 'tests/d3d9_frontend_wiring_tests.cpp', 'tests/opengl_frontend_wiring_tests.cpp', 'tests/vulkan_frontend_wiring_tests.cpp', 'tests/v040_compatibility_wiring_tests.cpp', 'tests/v041_external_host_contract_tests.cpp', 'tests/v041_version_wiring_tests.cpp', 'tests/v042_recovery_transport_wiring_tests.cpp', 'tests/v042_version_wiring_tests.cpp', 'tests/auto_detach_policy_tests.cpp', 'tests/auto_detach_wiring_tests.cpp',
+    'tests/renderer_route_policy_tests.cpp', 'tests/compat_dispatch_policy_tests.cpp', 'tests/d3d12_recovery_policy_tests.cpp', 'tests/v043_recovery_present_safe_guides_wiring_tests.cpp', 'tests/v043_recovery_ngx_snapshot_wiring_tests.cpp', 'tests/v044_streamline_postsubmit_snapshot_wiring_tests.cpp', 'tests/d3d10_frontend_wiring_tests.cpp', 'tests/d3d9_frontend_wiring_tests.cpp', 'tests/opengl_frontend_wiring_tests.cpp', 'tests/vulkan_frontend_wiring_tests.cpp', 'tests/v040_compatibility_wiring_tests.cpp', 'tests/v041_external_host_contract_tests.cpp', 'tests/v041_version_wiring_tests.cpp', 'tests/v042_recovery_transport_wiring_tests.cpp', 'tests/v042_version_wiring_tests.cpp', 'tests/auto_detach_policy_tests.cpp', 'tests/auto_detach_wiring_tests.cpp',
     'include/udlss/app_picker_policy.hpp', 'include/udlss/ngx_failure_policy.hpp', 'include/udlss/neural_route_policy.hpp',
     'examples/GameGuidesAdapter/README.md', 'examples/GameGuidesAdapter/template.cpp',
 ]
@@ -191,54 +191,67 @@ if 'waitRecoveryD3D11' not in recovery_on12:
     fail('v0.4.2 D3D12 recovery does not prove D3D11 completion before post-copy')
 if 'private D3D12 recovery queue' in recovery_on12:
     fail('v0.4.2 must not recreate the discarded private recovery queue')
+if 'queue_->Wait(wait.fence.Get(),wait.value)' in recovery_on12:
+    fail('v0.4.4 recovery must not inject cross-queue waits into the game dependency graph')
+if 'WaitForSingleObject(recoveryD11FenceEvent_,5000)' in recovery_on12:
+    fail('v0.4.4 recovery must not block Present for five seconds on D3D11 completion')
+if 'Recovery D3D11 frame still in flight; bypassing this frame safely' not in recovery_on12:
+    fail('v0.4.4 recovery-safe non-fatal D3D11 busy bypass is missing')
 if 'shouldAutoDetach' not in bridge_main or 'processHasTopLevelWindow' not in bridge_main:
     fail('v0.4.2 automatic target-exit detach wiring is incomplete')
 
-# v0.4.3 UE5 recovery lifetime isolation + volatile provider-guide snapshots.
-# Late-attached D3D12 recovery may observe short-lived Streamline motion/depth only
-# by copying them immediately into injector-owned resources. Game-owned transient
-# resources must still not survive the provider hook.
+# v0.4.4 temporal-guide hotfix: UE5 recovery lifetime isolation plus owned
+# provider snapshots. Streamline and NGX D3D12 inputs are held only until their
+# matching provider command list is submitted, then copied by a separate
+# injector-owned list on that same queue. Completed owned snapshots can be
+# consumed from the later recovery queue without a cross-queue game wait.
 dxgi_hooks=(ROOT/'src/bridge/dxgi_hooks.cpp').read_text(encoding='utf-8',errors='ignore')
 guides_cpp=(ROOT/'src/gpu/game_temporal_guides.cpp').read_text(encoding='utf-8',errors='ignore')
 guides_hpp=(ROOT/'src/gpu/game_temporal_guides.hpp').read_text(encoding='utf-8',errors='ignore')
 tracker12=(ROOT/'src/gpu/d3d12_resource_tracker.cpp').read_text(encoding='utf-8',errors='ignore')
-for token in ['const bool retainGameTemporalResources=provenQueue&&!recoveryMode', 'GameTemporalGuideCaptureMode::SnapshotOnly', 'setD3D12SemanticResourceTrackingEnabled(retainGameTemporalResources)', 'probeGameGuideHooks(c)', 'if(recoveryMode)gpu::releaseCapturedGameTemporalGuides()']:
+for token in ['const bool retainGameTemporalResources=provenQueue&&!recoveryMode', 'GameTemporalGuideCaptureMode::SnapshotOnly', 'setD3D12SemanticResourceTrackingEnabled(retainGameTemporalResources)', 'probeGameGuideHooks(c)']:
     if token not in dxgi_hooks:
-        fail(f'v0.4.3 recovery guide/lifetime policy missing from DXGI route: {token}')
+        fail(f'v0.4.4 recovery guide/lifetime policy missing from DXGI route: {token}')
+if 'setGameTemporalGuideCaptureMode(gpu::GameTemporalGuideCaptureMode::PresentSafeOnly)' in dxgi_hooks:
+    fail('v0.4.4 D3D12 Present still destroys frame guide captures by bouncing through PresentSafeOnly')
 for token in ['SnapshotOnly', 'snapshotOwned']:
     if token not in guides_hpp:
-        fail(f'v0.4.3 recovery snapshot guide declarations missing: {token}')
-for token in ['snapshotVolatileD3D12Guide', 'sl::eOnlyValidNow', 'sl::eValidUntilEvaluate', 'sl::eValidUntilPresent', 'incoming.snapshotOwned', 'g_snapshotLifetime', 'g_snapshotPool']:
+        fail(f'v0.4.4 recovery snapshot guide declarations missing: {token}')
+for token in ['GameTemporalGuideCaptureMode::SnapshotOnly', 'sl::eValidUntilPresent', 'sl::eOnlyValidNow', 'sl::eValidUntilEvaluate', 'PendingProviderGuides', 'g_pendingProviders', 'queuePendingProviderGuides', 'providerCommandListId', 'producerQueueId', 'captureSequence', 'consumeCapturedGameTemporalGuides', 'snapshotPendingGameTemporalGuidesAfterExecute', '(post-submit owned snapshot)', 'GameGuideSource::Ngx', 'promoteCompletedSnapshotsLocked']:
     if token not in guides_cpp:
-        fail(f'v0.4.3 volatile recovery snapshot path missing: {token}')
-for token in ['stageRecoveryGuide', 'RecoveryGuideSurface', 'captured.validUntilPresent||captured.snapshotOwned', '&externalGuide']:
-    if token not in recovery_on12:
-        fail(f'v0.4.3 recovery-owned guide staging missing: {token}')
-for token in ['semanticResourceTrackingEnabled', 'g.entries.clear()']:
-    if token not in tracker12:
-        fail(f'v0.4.3 D3D12 semantic lifetime release missing: {token}')
+        fail(f'v0.4.4 recovery-safe provider guide contract missing: {token}')
+for token in ['pendingGameTemporalGuideSnapshotActive()', 'origExecute(q,1,&l[i])', 'snapshotPendingGameTemporalGuidesAfterExecute(q,l[i],origExecute)']:
+    if token not in dxgi_hooks:
+        fail(f'v0.4.4 same-queue post-submit provider snapshot wiring missing: {token}')
+if 'recoveryGuideUsable(' not in recovery_on12 or 'shouldConsumeRecoveryGuide(' not in recovery_on12:
+    fail('v0.4.4 owned snapshot recovery admission/lifetime policy is missing')
+if 'captured.producerQueueId==recoveryQueueId_' in recovery_on12:
+    fail('v0.4.4 still hard-binds completed owned snapshots to the recovery queue')
+for forbidden in ['snapshotVolatileD3D12Guide', 'CopyResource(snapshot.Get(),source)', 'queue_->Wait(wait.fence.Get(),wait.value)', 'if(mode!=GameTemporalGuideCaptureMode::Full)return']:
+    if forbidden in guides_cpp or forbidden in dxgi_hooks:
+        fail(f'v0.4.4 unsafe or regressed recovery guide synchronization remains: {forbidden}')
 
 # External NRHost must carry the selected pass count and execute the same-frame
 # reset-only refinement chain instead of silently collapsing 2x-4x to one pass.
 for token in ['kAbi=6', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
     if token not in host_protocol:
-        fail(f'v0.4.3 external-host multipass protocol missing: {token}')
+        fail(f'v0.4.4 external-host multipass protocol missing: {token}')
 for token in ['nrPassesRequested=st.neuralPassesRequested', 'st.neuralPassesExecuted=shared_->nrPassesExecuted']:
     if token not in external_backend:
-        fail(f'v0.4.3 external-host multipass bridge wiring missing: {token}')
+        fail(f'v0.4.4 external-host multipass bridge wiring missing: {token}')
 for token in ['refinementFeature', 'refinementScratch', 'ensureRefinementFeature', 'for(std::uint32_t pass=2;pass<=requestedPasses;++pass)', 'shared->nrPassesExecuted=executedPasses']:
     if token not in host_source:
-        fail(f'v0.4.3 NRHost refinement chain missing: {token}')
+        fail(f'v0.4.4 NRHost refinement chain missing: {token}')
 
-if 'project(UniversalDLSS5 VERSION 0.4.3' not in cmake_root:
-    fail('CMake project version is not v0.4.3')
+if 'project(UniversalDLSS5 VERSION 0.4.4' not in cmake_root:
+    fail('CMake project version is not v0.4.4')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
 
 shared = (ROOT / 'include/udlss/shared_control.hpp').read_text(encoding='utf-8')
-if 'kControlAbi = 20' not in shared:
-    fail('v0.4.0 renderer/driver diagnostics layout must use control ABI 20')
+if 'kControlAbi = 21' not in shared:
+    fail('r7 applied-debug/recovery-output diagnostics layout must use control ABI 21')
 for token in ['stageMask', 'failureStage', 'neuralFrames', 'neuralActive']:
     if token not in shared:
         fail(f'missing v0.2 runtime diagnostic field: {token}')
@@ -382,7 +395,7 @@ for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'C
         fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
 if 'CreateWrappedResource(bb.Get()' in on12:
     fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
-for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.4.3']:
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.4.4']:
     if token not in attach_logger:
         fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 

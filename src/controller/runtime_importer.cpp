@@ -133,18 +133,48 @@ std::vector<fs::path> findCandidates(const fs::path& root, std::wstring_view fil
     return result;
 }
 
+// Transactional SDK import: never write directly over a DLL the host/game
+// may be loading. A failure leaves the old runtime file intact.
 bool copyVerifiedCandidate(const fs::path& source,const fs::path& destination,std::wstring& detail) {
     std::wstring binaryDetail;
     if (!isX64WindowsBinary(source,binaryDetail)) {detail=binaryDetail;return false;}
     std::wstring signatureDetail;
     if (!verifyNvidiaAuthenticode(source,signatureDetail)) {detail=signatureDetail;return false;}
     std::error_code ec;
+    if (fs::exists(destination,ec) && !ec && fs::equivalent(source,destination,ec) && !ec) {
+        detail=L"Already selected: "+signatureDetail;
+        return true;
+    }
+    ec.clear();
     fs::create_directories(destination.parent_path(),ec);
     if (ec) {detail=L"Could not create runtime destination: "+destination.parent_path().wstring();return false;}
-    ec.clear();
-    fs::copy_file(source,destination,fs::copy_options::overwrite_existing,ec);
-    if (ec) {const auto msg=ec.message();detail=L"Copy failed: "+std::wstring(msg.begin(),msg.end());return false;}
-    detail=signatureDetail;
+    // A different temporary name prevents loading an incomplete NVIDIA DLL.
+    // CREATE_NEW avoids overwriting another concurrent install attempt.
+    const auto staging=destination.parent_path() /
+        (L".udlss-stage-"+std::to_wstring(GetCurrentProcessId())+L"-"+
+         std::to_wstring(GetTickCount64())+L"-"+destination.filename().wstring());
+    HANDLE h=CreateFileW(staging.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(h==INVALID_HANDLE_VALUE){detail=L"Could not create staging file (Win32 "+std::to_wstring(GetLastError())+L")";return false;}
+    CloseHandle(h);
+    auto cleanup=[&](){std::error_code ignore;fs::remove(staging,ignore);};
+    // Do not use copy_options::overwrite_existing for the installed runtime.
+    fs::copy_file(source,staging,fs::copy_options::overwrite_existing,ec);
+    if(ec){const auto msg=ec.message();detail=L"Staging copy failed: "+std::wstring(msg.begin(),msg.end());cleanup();return false;}
+    std::wstring stagedSignature;
+    if (!isX64WindowsBinary(staging,binaryDetail) ||
+        !verifyNvidiaAuthenticode(staging,stagedSignature)) {
+        detail=L"Staged DLL failed verification; original runtime not modified.";
+        cleanup();return false;
+    }
+    if (!MoveFileExW(staging.c_str(),destination.c_str(),
+                      MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {
+        const DWORD last=GetLastError();
+        detail=L"Atomic install failed (Win32 "+std::to_wstring(last)+
+               L"). Close the game/controller before importing; original DLL unchanged.";
+        cleanup();return false;
+    }
+    detail=L"Atomically installed verified DLL. "+stagedSignature;
     return true;
 }
 

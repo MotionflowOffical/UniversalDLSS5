@@ -3,6 +3,8 @@
 #include "game_temporal_guides.hpp"
 #include "../bridge/attach_logger.hpp"
 #include "udlss/guide_candidate_policy.hpp"
+#include "udlss/provider_snapshot_policy.hpp"
+#include "udlss/ngxnr_guide_contract.hpp"
 #include <array>
 #include <algorithm>
 #include <cstring>
@@ -22,6 +24,18 @@ bool wrapReadOnlyGuide(ID3D11On12Device* on12,ID3D12Resource* resource,D3D12_RES
     const HRESULT hr=on12->CreateWrappedResource(resource,&flags,state,state,IID_PPV_ARGS(&out.wrapped));
     return SUCCEEDED(hr)&&out.wrapped;
 }
+std::uintptr_t queueIdentity(ID3D12CommandQueue* q){
+    if(!q)return 0;
+    ComPtr<IUnknown> id;
+    if(FAILED(q->QueryInterface(IID_PPV_ARGS(&id))))return reinterpret_cast<std::uintptr_t>(q);
+    return reinterpret_cast<std::uintptr_t>(id.Get());
+}
+
+
+// The vendor NGX NR contract names are documented by the independent
+// reconstruction in research/ngxnr. These are *not* NVIDIA public ABI claims.
+static_assert(udlss::ngxnr::isProviderDepthFormat(39));
+static_assert(udlss::ngxnr::isProviderMotionFormat(10));
 D3D12_RESOURCE_BARRIER transition(ID3D12Resource* r,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after){
     D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition.pResource=r;b.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;b.Transition.StateBefore=before;b.Transition.StateAfter=after;return b;
 }
@@ -31,7 +45,10 @@ DXGI_FORMAT recoveryGuideResourceFormat(DXGI_FORMAT viewFormat,bool depth){
         switch(viewFormat){
         case DXGI_FORMAT_R16G16_FLOAT:
         case DXGI_FORMAT_R16G16_SNORM:
-        case DXGI_FORMAT_R32G32_FLOAT:return viewFormat;
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:return viewFormat;
         default:return DXGI_FORMAT_UNKNOWN;
         }
     }
@@ -39,6 +56,21 @@ DXGI_FORMAT recoveryGuideResourceFormat(DXGI_FORMAT viewFormat,bool depth){
     case DXGI_FORMAT_D32_FLOAT: case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R32_TYPELESS:return DXGI_FORMAT_R32_TYPELESS;
     case DXGI_FORMAT_D24_UNORM_S8_UINT: case DXGI_FORMAT_R24G8_TYPELESS: case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:return DXGI_FORMAT_R24G8_TYPELESS;
     case DXGI_FORMAT_D16_UNORM: case DXGI_FORMAT_R16_TYPELESS: case DXGI_FORMAT_R16_UNORM:return DXGI_FORMAT_R16_TYPELESS;
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:return DXGI_FORMAT_R32G8X24_TYPELESS;
+    default:return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+DXGI_FORMAT recoveryGuideInteropFormat(DXGI_FORMAT viewFormat,bool depth){
+    if(!depth)return recoveryGuideResourceFormat(viewFormat,false);
+    // Prefer a typed D3D11-friendly representative for depth families.
+    // Cyberpunk tags R32_TYPELESS depth; standalone D3D11 opening of a
+    // D3D12-created R32_TYPELESS shared texture is driver-dependent, while
+    // R32_FLOAT is copy-compatible with the same typeless family.
+    switch(viewFormat){
+    case DXGI_FORMAT_D32_FLOAT: case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R32_TYPELESS:return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_D16_UNORM: case DXGI_FORMAT_R16_TYPELESS: case DXGI_FORMAT_R16_UNORM:return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_D24_UNORM_S8_UINT: case DXGI_FORMAT_R24G8_TYPELESS: case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:return DXGI_FORMAT_R24G8_TYPELESS;
     case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:return DXGI_FORMAT_R32G8X24_TYPELESS;
     default:return DXGI_FORMAT_UNKNOWN;
     }
@@ -97,7 +129,7 @@ bool D3D12On12Pipeline::initializeRecoveryD3D11(RuntimeStatus& st){
 }
 
 bool D3D12On12Pipeline::initialize(ID3D12CommandQueue*q,const std::wstring&dir,RuntimeStatus&st,bool recoveryMode){
-    if(!q||q->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT)return false;moduleDir_=dir;recoveryMode_=recoveryMode;queue_=q;
+    if(!q||q->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT)return false;moduleDir_=dir;recoveryMode_=recoveryMode;queue_=q;recoveryQueueId_=queueIdentity(q);
     if(FAILED(q->GetDevice(IID_PPV_ARGS(&d12_)))){wcscpy_s(st.message,L"Could not obtain D3D12 device from renderer queue");return false;}
     if(recoveryMode_){
         if(!initializeRecoveryD3D11(st))return false;
@@ -118,7 +150,7 @@ void D3D12On12Pipeline::reset(){
     pipeline_.reset();ownedColor11_.Reset();ownedColor12_.Reset();
     recoveryDepthGuide_.texture11.Reset();recoveryDepthGuide_.resource12.Reset();recoveryDepthGuide_={};
     recoveryMotionGuide_.texture11.Reset();recoveryMotionGuide_.resource12.Reset();recoveryMotionGuide_={};
-    width_=height_=0;format_=DXGI_FORMAT_UNKNOWN;preCopy_.fenceValue=postCopy_.fenceValue=guideCopy_.fenceValue=0;
+    width_=height_=0;format_=DXGI_FORMAT_UNKNOWN;preCopy_.fenceValue=postCopy_.fenceValue=guideCopy_.fenceValue=0;recoveryD11PendingValue_=0;
 }
 void D3D12On12Pipeline::retryNeural(){pipeline_.retryNeural();}
 
@@ -160,11 +192,27 @@ bool D3D12On12Pipeline::ensureOwnedColor(const D3D12_RESOURCE_DESC& bbDesc,Runti
 bool D3D12On12Pipeline::waitRecoveryD3D11(RuntimeStatus& st){
     if(!recoveryMode_)return true;
     if(!recoveryD11Context4_||!recoveryD11Fence_||!recoveryD11FenceEvent_)return false;
+    if(recoveryD11PendingValue_ && recoveryD11Fence_->GetCompletedValue()<recoveryD11PendingValue_){
+        if(FAILED(recoveryD11Fence_->SetEventOnCompletion(recoveryD11PendingValue_,recoveryD11FenceEvent_)) ||
+           WaitForSingleObject(recoveryD11FenceEvent_,50)!=WAIT_OBJECT_0){
+            st.failureStage=PipelineStage::None;st.neuralActive=0;
+            wcscpy_s(st.message,L"Recovery D3D11 frame still in flight; bypassing this frame safely");
+            return false;
+        }
+    }
+    recoveryD11PendingValue_=0;
     const auto value=recoveryD11FenceValue_++;
     if(FAILED(recoveryD11Context4_->Signal(recoveryD11Fence_.Get(),value))){wcscpy_s(st.message,L"Could not signal recovery D3D11 completion fence");return false;}
     ctx_->Flush();
+    recoveryD11PendingValue_=value;
+    if(recoveryD11Fence_->GetCompletedValue()>=value){recoveryD11PendingValue_=0;return true;}
     if(FAILED(recoveryD11Fence_->SetEventOnCompletion(value,recoveryD11FenceEvent_))){wcscpy_s(st.message,L"Could not arm recovery D3D11 completion event");return false;}
-    if(WaitForSingleObject(recoveryD11FenceEvent_,5000)!=WAIT_OBJECT_0){wcscpy_s(st.message,L"Recovery D3D11 work did not complete before D3D12 handoff");return false;}
+    if(WaitForSingleObject(recoveryD11FenceEvent_,50)!=WAIT_OBJECT_0){
+        st.failureStage=PipelineStage::None;st.neuralActive=0;
+        wcscpy_s(st.message,L"Recovery D3D11 frame still in flight; bypassing this frame safely");
+        return false;
+    }
+    recoveryD11PendingValue_=0;
     return true;
 }
 
@@ -188,28 +236,84 @@ bool D3D12On12Pipeline::submitBackbufferCopy(ID3D12Resource* bb,bool intoOwned,R
     return true;
 }
 
+bool D3D12On12Pipeline::openOwnedSnapshotDirect(ID3D12Resource* source,DXGI_FORMAT viewFormat,bool depth,RecoveryGuideSurface& surface,RuntimeStatus& st){
+    if(!recoveryMode_||!source||!recoveryD11Device1_||!d12_)return false;
+    const auto src=source->GetDesc();
+    if(src.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||src.SampleDesc.Count!=1||src.MipLevels!=1)return false;
+    const auto effectiveView=viewFormat!=DXGI_FORMAT_UNKNOWN?viewFormat:src.Format;
+    if(recoveryGuideResourceFormat(effectiveView,depth)==DXGI_FORMAT_UNKNOWN){surface.lastInteropHr=E_INVALIDARG;return false;}
+    surface.failureOperation=2;surface.candidateAttempts=1;surface.triedFormat=src.Format;surface.interopPath=1;
+    HANDLE shared{};const auto shareHr=d12_->CreateSharedHandle(source,nullptr,GENERIC_ALL,nullptr,&shared);
+    if(FAILED(shareHr)||!shared){surface.lastInteropHr=FAILED(shareHr)?shareHr:E_FAIL;return false;}
+    surface.failureOperation=3;
+    ComPtr<ID3D11Texture2D> opened;const auto openHr=recoveryD11Device1_->OpenSharedResource1(shared,IID_PPV_ARGS(&opened));CloseHandle(shared);
+    if(FAILED(openHr)||!opened){surface.lastInteropHr=FAILED(openHr)?openHr:E_FAIL;return false;}
+    D3D11_TEXTURE2D_DESC od{};opened->GetDesc(&od);
+    if(od.Width!=(UINT)src.Width||od.Height!=src.Height||od.SampleDesc.Count!=1){surface.failureOperation=4;surface.lastInteropHr=E_FAIL;return false;}
+    surface.failureOperation=0;surface.texture11=std::move(opened);surface.resource12=source;surface.width=od.Width;surface.height=od.Height;
+    surface.resourceFormat=src.Format;surface.viewFormat=effectiveView;surface.directOwned=true;surface.lastInteropHr=S_OK;surface.interopPath=1;
+    return true;
+}
+
 bool D3D12On12Pipeline::stageRecoveryGuide(ID3D12Resource* source,D3D12_RESOURCE_STATES sourceState,DXGI_FORMAT viewFormat,bool depth,RecoveryGuideSurface& surface,RuntimeStatus& st){
     if(!recoveryMode_||!source||!recoveryD11Device1_||!d12_||!queue_||!copyFence_)return false;
     const auto src=source->GetDesc();
     if(src.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||src.SampleDesc.Count!=1||src.MipLevels!=1)return false;
-    const auto resourceFormat=recoveryGuideResourceFormat(viewFormat!=DXGI_FORMAT_UNKNOWN?viewFormat:src.Format,depth);
-    if(resourceFormat==DXGI_FORMAT_UNKNOWN)return false;
+    const auto effectiveView=viewFormat!=DXGI_FORMAT_UNKNOWN?viewFormat:src.Format;
+    const auto resourceFormat=recoveryGuideResourceFormat(effectiveView,depth);
+    const auto interopFormat=recoveryGuideInteropFormat(effectiveView,depth);
+    if(resourceFormat==DXGI_FORMAT_UNKNOWN||interopFormat==DXGI_FORMAT_UNKNOWN){surface.lastInteropHr=E_INVALIDARG;return false;}
     const UINT w=(UINT)src.Width,h=src.Height;
-    const bool recreate=!surface.resource12||!surface.texture11||surface.width!=w||surface.height!=h||surface.resourceFormat!=resourceFormat||surface.viewFormat!=viewFormat;
+    const bool recreate=surface.directOwned||!surface.resource12||!surface.texture11||surface.width!=w||surface.height!=h||surface.resourceFormat!=interopFormat||surface.viewFormat!=effectiveView;
     if(recreate){
         if(!waitCopyContext(guideCopy_,st))return false;
-        surface.texture11.Reset();surface.resource12.Reset();surface.width=surface.height=0;surface.resourceFormat=surface.viewFormat=DXGI_FORMAT_UNKNOWN;
-        D3D12_RESOURCE_DESC d=src;d.Format=resourceFormat;d.Flags=D3D12_RESOURCE_FLAG_NONE;d.MipLevels=1;d.SampleDesc.Count=1;d.SampleDesc.Quality=0;
-        D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CPUPageProperty=D3D12_CPU_PAGE_PROPERTY_UNKNOWN;heap.MemoryPoolPreference=D3D12_MEMORY_POOL_UNKNOWN;const UINT nodeMask=queue_->GetDesc().NodeMask?queue_->GetDesc().NodeMask:1u;heap.CreationNodeMask=nodeMask;heap.VisibleNodeMask=nodeMask;
-        if(FAILED(d12_->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_SHARED,&d,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&surface.resource12))))return false;
-        HANDLE shared{};const auto shareHr=d12_->CreateSharedHandle(surface.resource12.Get(),nullptr,GENERIC_ALL,nullptr,&shared);
-        if(FAILED(shareHr)||!shared){surface.resource12.Reset();return false;}
-        const auto openHr=recoveryD11Device1_->OpenSharedResource1(shared,IID_PPV_ARGS(&surface.texture11));CloseHandle(shared);
-        if(FAILED(openHr)||!surface.texture11){surface.resource12.Reset();return false;}
-        surface.width=w;surface.height=h;surface.resourceFormat=resourceFormat;surface.viewFormat=viewFormat;
+        surface.texture11.Reset();surface.resource12.Reset();surface.width=surface.height=0;
+        surface.resourceFormat=surface.viewFormat=DXGI_FORMAT_UNKNOWN;
+        surface.directOwned=false;surface.interopPath=2;surface.lastInteropHr=S_OK;
+        surface.failureOperation=0;surface.candidateAttempts=0;surface.triedFormat=DXGI_FORMAT_UNKNOWN;
+
+        // D3D12-created, D3D11-opened textures are constrained by the
+        // device's cross-API shared-resource tier. This is not the same as
+        // the ordinary D3D12 typed-copy compatibility check. Try the typed
+        // SRV family first, then a compatible typeless family, and try
+        // simultaneous-access only as a last resort. No game-owned texture
+        // state is changed during these *allocation* probes.
+        DXGI_FORMAT options[2]{interopFormat,DXGI_FORMAT_UNKNOWN};
+        if(depth && interopFormat!=resourceFormat) options[1]=resourceFormat;
+        const UINT nodeMask=queue_->GetDesc().NodeMask?queue_->GetDesc().NodeMask:1u;
+        D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
+        heap.CreationNodeMask=nodeMask;heap.VisibleNodeMask=nodeMask;
+        for(unsigned candidate=0;candidate<4 && !surface.texture11;++candidate){
+            const DXGI_FORMAT format=options[candidate/2];
+            if(format==DXGI_FORMAT_UNKNOWN)continue;
+            D3D12_RESOURCE_DESC d=src;d.Format=format;
+            d.Flags=(candidate%2)?D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS:D3D12_RESOURCE_FLAG_NONE;
+            d.MipLevels=1;d.SampleDesc.Count=1;d.SampleDesc.Quality=0;
+            // Do not carry an engine-specific GPU layout into an NT-shared
+            // texture; a standard UNKNOWN layout is required here.
+            d.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
+            ++surface.candidateAttempts;surface.triedFormat=format;
+            ComPtr<ID3D12Resource> probe12;
+            const HRESULT createHr=d12_->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_SHARED,&d,
+                D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&probe12));
+            if(FAILED(createHr)||!probe12){surface.failureOperation=1;surface.lastInteropHr=FAILED(createHr)?createHr:E_FAIL;continue;}
+            HANDLE shared{};
+            const HRESULT shareHr=d12_->CreateSharedHandle(probe12.Get(),nullptr,GENERIC_ALL,nullptr,&shared);
+            if(FAILED(shareHr)||!shared){surface.failureOperation=2;surface.lastInteropHr=FAILED(shareHr)?shareHr:E_FAIL;continue;}
+            ComPtr<ID3D11Texture2D> probe11;
+            const HRESULT openHr=recoveryD11Device1_->OpenSharedResource1(shared,IID_PPV_ARGS(&probe11));
+            CloseHandle(shared);
+            if(FAILED(openHr)||!probe11){surface.failureOperation=3;surface.lastInteropHr=FAILED(openHr)?openHr:E_FAIL;continue;}
+            D3D11_TEXTURE2D_DESC od{};probe11->GetDesc(&od);
+            if(od.Width!=w||od.Height!=h||od.SampleDesc.Count!=1){surface.failureOperation=4;surface.lastInteropHr=E_FAIL;continue;}
+            surface.resource12=std::move(probe12);surface.texture11=std::move(probe11);
+            surface.width=w;surface.height=h;surface.resourceFormat=format;
+            surface.viewFormat=effectiveView;surface.lastInteropHr=S_OK;surface.failureOperation=0;
+        }
+        if(!surface.texture11)return false;
     }
-    if(!waitCopyContext(guideCopy_,st))return false;
-    if(FAILED(guideCopy_.allocator->Reset())||FAILED(guideCopy_.list->Reset(guideCopy_.allocator.Get(),nullptr)))return false;
+    if(!waitCopyContext(guideCopy_,st)){surface.failureOperation=5;return false;}
+    if(FAILED(guideCopy_.allocator->Reset())||FAILED(guideCopy_.list->Reset(guideCopy_.allocator.Get(),nullptr))){surface.failureOperation=5;surface.lastInteropHr=E_FAIL;return false;}
     std::array<D3D12_RESOURCE_BARRIER,4> barriers{};UINT count=0;
     if(sourceState!=D3D12_RESOURCE_STATE_COPY_SOURCE)barriers[count++]=transition(source,sourceState,D3D12_RESOURCE_STATE_COPY_SOURCE);
     barriers[count++]=transition(surface.resource12.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST);
@@ -218,34 +322,32 @@ bool D3D12On12Pipeline::stageRecoveryGuide(ID3D12Resource* source,D3D12_RESOURCE
     barriers[count++]=transition(surface.resource12.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON);
     if(sourceState!=D3D12_RESOURCE_STATE_COPY_SOURCE)barriers[count++]=transition(source,D3D12_RESOURCE_STATE_COPY_SOURCE,sourceState);
     guideCopy_.list->ResourceBarrier(count,barriers.data());
-    if(FAILED(guideCopy_.list->Close()))return false;
+    const HRESULT closeHr=guideCopy_.list->Close();if(FAILED(closeHr)){surface.failureOperation=5;surface.lastInteropHr=closeHr;return false;}
     ID3D12CommandList* lists[]={guideCopy_.list.Get()};queue_->ExecuteCommandLists(1,lists);guideCopy_.fenceValue=nextCopyFenceValue_++;
-    if(FAILED(queue_->Signal(copyFence_.Get(),guideCopy_.fenceValue)))return false;
-    return waitCopyContext(guideCopy_,st);
-}
-
-bool D3D12On12Pipeline::enqueueRecoveryWaits(const std::vector<D3D12QueueWaitPoint>* waits,RuntimeStatus& st){
-    if(!recoveryMode_||!waits||waits->empty())return true;
-    for(const auto& wait:*waits){
-        if(!wait.fence||!wait.value)continue;
-        if(FAILED(queue_->Wait(wait.fence.Get(),wait.value))){wcscpy_s(st.message,L"Recovery presentation queue could not wait for another game queue completion");return false;}
-    }
-    return true;
+    const HRESULT signalHr=queue_->Signal(copyFence_.Get(),guideCopy_.fenceValue);if(FAILED(signalHr)){surface.failureOperation=5;surface.lastInteropHr=signalHr;return false;}
+    const bool waited=waitCopyContext(guideCopy_,st);if(!waited){surface.failureOperation=5;surface.lastInteropHr=HRESULT_FROM_WIN32(WAIT_TIMEOUT);return false;}
+    surface.failureOperation=0;surface.lastInteropHr=S_OK;return true;
 }
 
 bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::wstring&runtime,RuntimeStatus&st,const SwapchainColorContext* colorContext,bool synchronizeBeforePresent,const std::vector<D3D12QueueWaitPoint>* recoveryWaits){
+    st.recoveryPostCopyCommitted=0;
     if(!swap||!s.allowD3D11On12||(!recoveryMode_&&!on12_))return false;
     bridge::setCrashStage(bridge::CrashStage::BackbufferAcquire);
     ComPtr<IDXGISwapChain3> s3;if(FAILED(swap->QueryInterface(IID_PPV_ARGS(&s3))))return false;
     const UINT i=s3->GetCurrentBackBufferIndex();
     ComPtr<ID3D12Resource> bb;if(FAILED(swap->GetBuffer(i,IID_PPV_ARGS(&bb))))return false;
     const auto desc=bb->GetDesc();
+    if(recoveryMode_ && recoveryD11PendingValue_ && recoveryD11Fence_ && recoveryD11Fence_->GetCompletedValue()<recoveryD11PendingValue_){
+        st.failureStage=PipelineStage::None;st.neuralActive=0;
+        wcscpy_s(st.message,L"Recovery D3D11 frame still in flight; bypassing this frame safely");
+        return false;
+    }
+    if(recoveryMode_)recoveryD11PendingValue_=0;
     const bool lifecycleChanged=width_ && (width_!=desc.Width || height_!=desc.Height || format_!=desc.Format);
     if(lifecycleChanged)reset();
     if(!ensureOwnedColor(desc,st))return false;
 
     bridge::setCrashStage(bridge::CrashStage::PreCopy);
-    if(!enqueueRecoveryWaits(recoveryWaits,st))return false;
     if(!submitBackbufferCopy(bb.Get(),true,st))return false;
     // Recovery uses a normal same-adapter D3D11 device rather than D3D11On12.
     // The D3D12 pre-copy must therefore be complete before D3D11 touches the
@@ -274,18 +376,28 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
         if(captured.depth12){st.guideDepthWidth=captured.depthWidth;st.guideDepthHeight=captured.depthHeight;st.guideDepthConfidence=captured.confidence;}
         wcsncpy_s(st.guideFields,L"D3D12 temporal inputs detected; deferred because provider lifetime ends before Present and no owned snapshot was available",_TRUNCATE);
     }
-    if(capturedPresentSafe){
+    // Injector-owned snapshots are admitted after their post-submit copy fence
+    // has completed (snapshotGameTemporalGuides only promotes completed slots),
+    // so they no longer need to originate on the recovery/present queue.
+    // Game-owned Present-safe resources retain the stricter same-queue rule.
+    const bool recoveryGuideQueueSafe=recoveryGuideUsable(recoveryMode_,captured.snapshotOwned,captured.snapshotOwned,
+                                                          captured.validUntilPresent,captured.producerQueueId,recoveryQueueId_);
+    if(capturedPresentSafe && recoveryGuideQueueSafe){
         externalGuide.source=captured.source;externalGuide.provider=captured.provider;externalGuide.cameraCut=captured.cameraCut;
         if(recoveryMode_){
             // Recovery never hands a game-owned resource to D3D11/NRHost.
             // Streamline Present-safe resources and volatile injector-owned snapshots are copied on the proven
             // D3D12 queue into injector-owned NT-handle textures first.
-            if(s.useGameDepth&&captured.depth12&&guideExtentAspectCompatible(captured.depthWidth,captured.depthHeight,width_,height_)&&
-               stageRecoveryGuide(captured.depth12.Get(),captured.depthState,captured.depthFormat,true,recoveryDepthGuide_,st)){
+            const bool depthExtentOk=providerGuideExtentCompatible(captured.depthWidth,captured.depthHeight,width_,height_);
+            const bool motionExtentOk=providerGuideExtentCompatible(captured.motionWidth,captured.motionHeight,width_,height_);
+            const bool directDepth=s.useGameDepth&&captured.snapshotOwned&&captured.depthSnapshotOwned&&captured.depth12&&depthExtentOk&&openOwnedSnapshotDirect(captured.depth12.Get(),captured.depthFormat,true,recoveryDepthGuide_,st);
+            const bool directMotion=s.motionSource==MotionSource::Auto&&captured.snapshotOwned&&captured.motionSnapshotOwned&&captured.motion12&&captured.motionConventionKnown&&motionExtentOk&&openOwnedSnapshotDirect(captured.motion12.Get(),captured.motionFormat,false,recoveryMotionGuide_,st);
+            const bool stagedDepth=!directDepth&&s.useGameDepth&&captured.depth12&&depthExtentOk&&stageRecoveryGuide(captured.depth12.Get(),captured.depthState,captured.depthFormat,true,recoveryDepthGuide_,st);
+            const bool stagedMotion=!directMotion&&s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&motionExtentOk&&stageRecoveryGuide(captured.motion12.Get(),captured.motionState,captured.motionFormat,false,recoveryMotionGuide_,st);
+            if(s.useGameDepth&&captured.depth12&&(directDepth||stagedDepth)){
                 externalGuide.depth=recoveryDepthGuide_.texture11;externalGuide.depthViewFormat=captured.depthFormat;externalGuide.depthInverted=captured.depthInverted;externalGuide.depthConventionKnown=captured.depthConventionKnown;externalGuide.depthWidth=captured.depthWidth;externalGuide.depthHeight=captured.depthHeight;externalGuide.depthConfidence=captured.confidence;
             }
-            if(s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&guideExtentAspectCompatible(captured.motionWidth,captured.motionHeight,width_,height_)&&
-               stageRecoveryGuide(captured.motion12.Get(),captured.motionState,captured.motionFormat,false,recoveryMotionGuide_,st)){
+            if(s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&(directMotion||stagedMotion)){
                 externalGuide.motion=recoveryMotionGuide_.texture11;externalGuide.motionConventionValid=true;externalGuide.motionEncoding=NativeMotionEncoding::PixelCurrentToPrevious;externalGuide.motionScaleX=captured.motionToPixelScaleX;externalGuide.motionScaleY=captured.motionToPixelScaleY;externalGuide.motionWidth=captured.motionWidth;externalGuide.motionHeight=captured.motionHeight;externalGuide.motionConfidence=captured.confidence;
             }
             if(externalGuide.depth||externalGuide.motion){
@@ -293,13 +405,13 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
                 provider+=L" (staged copy)";externalGuide.provider=provider;
             }
         }else{
-            if(s.useGameDepth&&captured.depth12&&guideExtentAspectCompatible(captured.depthWidth,captured.depthHeight,width_,height_)){
+            if(s.useGameDepth&&captured.depth12&&providerGuideExtentCompatible(captured.depthWidth,captured.depthHeight,width_,height_)){
                 auto state=globalD3D12ResourceTracker().currentState(captured.depth12.Get(),captured.depthState);
                 if(wrapReadOnlyGuide(on12_.Get(),captured.depth12.Get(),state,depthWrap)){
                     externalGuide.depth=depthWrap.wrapped;externalGuide.depthViewFormat=captured.depthFormat;externalGuide.depthInverted=captured.depthInverted;externalGuide.depthConventionKnown=captured.depthConventionKnown;externalGuide.depthWidth=captured.depthWidth;externalGuide.depthHeight=captured.depthHeight;externalGuide.depthConfidence=captured.confidence;
                 }
             }
-            if(s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&guideExtentAspectCompatible(captured.motionWidth,captured.motionHeight,width_,height_)){
+            if(s.motionSource==MotionSource::Auto&&captured.motion12&&captured.motionConventionKnown&&providerGuideExtentCompatible(captured.motionWidth,captured.motionHeight,width_,height_)){
                 auto state=globalD3D12ResourceTracker().currentState(captured.motion12.Get(),captured.motionState);
                 if(wrapReadOnlyGuide(on12_.Get(),captured.motion12.Get(),state,motionWrap)){
                     externalGuide.motion=motionWrap.wrapped;externalGuide.motionConventionValid=true;externalGuide.motionEncoding=NativeMotionEncoding::PixelCurrentToPrevious;externalGuide.motionScaleX=captured.motionToPixelScaleX;externalGuide.motionScaleY=captured.motionToPixelScaleY;externalGuide.motionWidth=captured.motionWidth;externalGuide.motionHeight=captured.motionHeight;externalGuide.motionConfidence=captured.confidence;
@@ -307,6 +419,19 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
             }
         }
     }
+    if(recoveryMode_&&capturedPresentSafe&&!recoveryGuideQueueSafe){
+        std::wstring provider=captured.provider.empty()?L"Streamline game tags":captured.provider;
+        wcsncpy_s(st.guideAdapterName,provider.c_str(),_TRUNCATE);
+        wcsncpy_s(st.guideFields,L"game guides observed but deferred: provider command list did not execute on the proven recovery queue",_TRUNCATE);
+    }
+
+    // Recovery may overlap DXGI Present with the game's CPU preparation of the
+    // next frame. Retire completed owned snapshots after this frame has handled
+    // them, but keep a game-owned Present-safe capture that was rejected only
+    // because its provider queue has not yet been proven.
+    const bool usedCapturedGuide=externalGuide.depth||externalGuide.motion;
+    const bool consumeCapturedAfterUse=captured&&shouldConsumeRecoveryGuide(recoveryMode_,captured.snapshotOwned,usedCapturedGuide,recoveryGuideQueueSafe);
+
     if(!externalGuide.depth&&s.useGameDepth&&!recoveryMode_){
         const auto tracked=globalD3D12ResourceTracker().bestDepthCandidate(d12_.Get(),width_,height_);
         if(tracked.resource&&wrapReadOnlyGuide(on12_.Get(),tracked.resource.Get(),tracked.state,depthWrap)){
@@ -319,6 +444,7 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
         bridge::setCrashStage(bridge::CrashStage::NeuralProcess);
         ok=pipeline_.process(ownedColor11_.Get(),s,runtime,st,(externalGuide.depth||externalGuide.motion)?&externalGuide:nullptr,colorContext);
         if(!waitRecoveryD3D11(st))return false;
+        if(consumeCapturedAfterUse)consumeCapturedGameTemporalGuides(captured.captureSequence);
     }else{
         std::array<ID3D11Resource*,3> acquired{};UINT acquiredCount=0;acquired[acquiredCount++]=ownedColor11_.Get();
         if(depthWrap.wrapped)acquired[acquiredCount++]=depthWrap.wrapped.Get();
@@ -332,6 +458,28 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
         ctx_->Flush();
     }
     if(diagnosticMotionCandidate.score>st.nativeMotionCandidateScore){st.nativeMotionCandidateId=diagnosticMotionCandidate.stableId;st.nativeMotionCandidateScore=diagnosticMotionCandidate.score;}
+    if(!externalGuide.depth&&!externalGuide.motion){
+        if(captured.depth12){st.guideDepthWidth=captured.depthWidth;st.guideDepthHeight=captured.depthHeight;st.guideDepthConfidence=captured.confidence;}
+        if(captured.motion12){st.guideMotionWidth=captured.motionWidth;st.guideMotionHeight=captured.motionHeight;st.guideMotionConfidence=captured.confidence;}
+        if(captured){
+            std::wstring provider=captured.provider.empty()?L"provider snapshot":captured.provider;wcsncpy_s(st.guideAdapterName,provider.c_str(),_TRUNCATE);
+            wchar_t stage[160]{};
+            const bool dExtent=captured.depth12&&providerGuideExtentCompatible(captured.depthWidth,captured.depthHeight,width_,height_);
+            const bool mExtent=captured.motion12&&providerGuideExtentCompatible(captured.motionWidth,captured.motionHeight,width_,height_);
+            // Compact error code must fit the 160-character shared diagnostic.
+            // op: 1=CreateResource, 2=CreateSharedHandle, 3=OpenSharedResource1,
+            //     4=unexpected desc, 5=copy submission or fence wait.
+            swprintf_s(stage,L"stage:D f%u hr=%08X p%u op%u a%u f%u;M f%u hr=%08X p%u op%u a%u f%u",
+                (unsigned)captured.depthFormat,(unsigned)recoveryDepthGuide_.lastInteropHr,
+                recoveryDepthGuide_.interopPath,recoveryDepthGuide_.failureOperation,
+                recoveryDepthGuide_.candidateAttempts,(unsigned)recoveryDepthGuide_.triedFormat,
+                (unsigned)captured.motionFormat,(unsigned)recoveryMotionGuide_.lastInteropHr,
+                recoveryMotionGuide_.interopPath,recoveryMotionGuide_.failureOperation,
+                recoveryMotionGuide_.candidateAttempts,(unsigned)recoveryMotionGuide_.triedFormat);
+            wcsncpy_s(st.guideFields,stage,_TRUNCATE);
+        }else wcscpy_s(st.guideFields,L"synthetic guides only");
+        const auto hookDiag=gameTemporalGuideHookDiagnostics();std::wstring fields=st.guideFields;fields+=L"; ";fields+=hookDiag;wcsncpy_s(st.guideFields,fields.c_str(),_TRUNCATE);
+    }
     bridge::setCrashStage(bridge::CrashStage::PostCopy);
     if(!submitBackbufferCopy(bb.Get(),false,st))return false;
     // A late-attach recovery queue is inferred from actual PRESENT transitions.
@@ -340,6 +488,7 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
     // Waiting for the final copy before Present proves the handoff is complete;
     // exact swapchain-creation queues retain the asynchronous native fast path.
     if(synchronizeBeforePresent && !waitCopyContext(postCopy_,st))return false;
+    if(recoveryMode_)st.recoveryPostCopyCommitted=1;
     bridge::setCrashStage(bridge::CrashStage::ProcessComplete);
     return ok;
 }

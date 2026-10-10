@@ -28,7 +28,7 @@ using namespace udlss::neural::hostipc;
 
 namespace {
 constexpr const char* kHostProjectId="a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kHostEngineVersion="0.4.3";
+constexpr const char* kHostEngineVersion="0.4.4";
 constexpr NVSDK_NGX_Feature kFeature=NVSDK_NGX_Feature_Reserved18;
 constexpr unsigned long long kFallbackSnippetApplicationId=0x0876232Cull;
 constexpr const char* kWidth="DLSSNR.Width"; constexpr const char* kHeight="DLSSNR.Height";
@@ -43,9 +43,13 @@ constexpr const char* kDepthInverted="DLSSNR.DepthInverted"; constexpr const cha
 constexpr const char* kIndicatorInvertX="DLSS.Indicator.Invert.X.Axis"; constexpr const char* kIndicatorInvertY="DLSS.Indicator.Invert.Y.Axis";
 constexpr const char* kStyle="DLSSNR.Style"; constexpr const char* kIntensity="DLSSNR.Intensity"; constexpr const char* kLocalTone="DLSSNR.LocalToneStrength";
 constexpr const char* kLocalStructure="DLSSNR.LocalStructureStrength"; constexpr const char* kSkinStructure="DLSSNR.SkinStructureStrength"; constexpr const char* kUseAutoMask="DLSSNR.UseAutoMask"; constexpr const char* kUiCorrection="DLSSNR.UICorrection";
+constexpr const char* kColorSubrectX="DLSSNR.ColorSubrectBaseX"; constexpr const char* kColorSubrectY="DLSSNR.ColorSubrectBaseY";
 constexpr const char* kColorSubrectW="DLSSNR.ColorSubrectWidth"; constexpr const char* kColorSubrectH="DLSSNR.ColorSubrectHeight";
+constexpr const char* kOutputSubrectX="DLSSNR.OutputSubrectBaseX"; constexpr const char* kOutputSubrectY="DLSSNR.OutputSubrectBaseY";
 constexpr const char* kOutputSubrectW="DLSSNR.OutputSubrectWidth"; constexpr const char* kOutputSubrectH="DLSSNR.OutputSubrectHeight";
+constexpr const char* kMVecSubrectX="DLSSNR.MVecSubrectBaseX"; constexpr const char* kMVecSubrectY="DLSSNR.MVecSubrectBaseY";
 constexpr const char* kMVecSubrectW="DLSSNR.MVecSubrectWidth"; constexpr const char* kMVecSubrectH="DLSSNR.MVecSubrectHeight";
+constexpr const char* kDepthSubrectX="DLSSNR.DepthSubrectBaseX"; constexpr const char* kDepthSubrectY="DLSSNR.DepthSubrectBaseY";
 constexpr const char* kDepthSubrectW="DLSSNR.DepthSubrectWidth"; constexpr const char* kDepthSubrectH="DLSSNR.DepthSubrectHeight"; constexpr const char* kControlSubrectW="DLSSNR.ControlMaskSubrectWidth"; constexpr const char* kControlSubrectH="DLSSNR.ControlMaskSubrectHeight";
 
 using SnippetInitExtFn=NVSDK_NGX_Result (NVSDK_CONV *)(unsigned long long,const wchar_t*,ID3D12Device*,NVSDK_NGX_Version,const NVSDK_NGX_Parameter*);
@@ -114,7 +118,7 @@ struct Host {
 
     bool openSession(const std::wstring& name){session=name;mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name.c_str());if(!mapping)return false;shared=(Shared*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared));if(!shared||shared->magic!=kMagic||shared->abi!=kAbi)return false;mark(shared,PipelineStage::HostStarted);frameEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Frame").c_str());stopEvent=OpenEventW(SYNCHRONIZE,FALSE,(name+L".Stop").c_str());doneEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Done").c_str());if(!frameEvent||!stopEvent||!doneEvent)return false;shared->hostPid=GetCurrentProcessId();bridgeProcess=OpenProcess(SYNCHRONIZE,FALSE,shared->bridgePid);mark(shared,PipelineStage::HostConnected);InterlockedExchange(&shared->state,(LONG)State::WaitingConfig);wcscpy_s(shared->message,L"External NR host waiting for GPU resource configuration");return true;}
 
-    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
+    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_HIGH;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue)))){q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;}if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
 
     bool openTransferred(std::uint64_t wireHandle,REFIID iid,void** out,HRESULT& result){
         if(!wireHandle){result=E_INVALIDARG;return false;}
@@ -256,6 +260,8 @@ struct Host {
         params->Set(kStyle,shared->nrStyle);params->Set(kIntensity,shared->nrIntensity);params->Set(kLocalTone,shared->nrTone);
         params->Set(kLocalStructure,shared->nrStructure);params->Set(kSkinStructure,shared->nrSkinStructure);
         params->Set(kUseAutoMask,shared->nrAutoMask);params->Set(kUiCorrection,shared->nrUiCorrection);
+        params->Set(kColorSubrectX,0u);params->Set(kColorSubrectY,0u);params->Set(kOutputSubrectX,0u);params->Set(kOutputSubrectY,0u);
+        params->Set(kMVecSubrectX,0u);params->Set(kMVecSubrectY,0u);params->Set(kDepthSubrectX,0u);params->Set(kDepthSubrectY,0u);
         params->Set(kColorSubrectW,shared->width);params->Set(kColorSubrectH,shared->height);params->Set(kOutputSubrectW,shared->width);params->Set(kOutputSubrectH,shared->height);
         params->Set(kMVecSubrectW,shared->width);params->Set(kMVecSubrectH,shared->height);params->Set(kDepthSubrectW,shared->width);params->Set(kDepthSubrectH,shared->height);
         params->Set(kControlSubrectW,shared->width);params->Set(kControlSubrectH,shared->height);
@@ -343,6 +349,10 @@ struct Host {
             setMessage(shared,PipelineStage::HostRuntimeFailed,(int)signalHr,L"NRHost: failed to enqueue output fence signal");
             InterlockedExchange(&shared->state,(LONG)State::Error);InterlockedExchange(&shared->completedSeq,seq);SetEvent(doneEvent);return;
         }
+        // Publish enqueue immediately after the queue signal is accepted. The
+        // bridge still requires completedSeq + the shared GPU fence for exact
+        // output readiness, so this only removes unnecessary CPU-side delay.
+        InterlockedExchange(&shared->enqueuedSeq,seq);SetEvent(doneEvent);
         shared->lastResult=(int)r;
         shared->nrPassesExecuted=executedPasses;
         if(success){
@@ -357,7 +367,7 @@ struct Host {
         }else{
             setMessage(shared,PipelineStage::FeatureEvaluateFailed,(int)r,L"NRHost: feature 18 evaluate failed; host returned GPU passthrough output");InterlockedExchange(&shared->state,(LONG)State::Error);
         }
-        InterlockedExchange(&shared->completedSeq,seq);InterlockedExchange(&shared->enqueuedSeq,seq);SetEvent(doneEvent);
+        InterlockedExchange(&shared->completedSeq,seq);SetEvent(doneEvent);
     }
 
     void releaseFeature(){
@@ -373,4 +383,4 @@ struct Host {
 std::wstring sessionArg(){int argc=0;auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);std::wstring out;if(argv){for(int i=1;i+1<argc;++i)if(std::wstring(argv[i])==L"--session")out=argv[i+1];LocalFree(argv);}return out;}
 }
 
-int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){const auto session=sessionArg();if(session.empty())return 2;Host h;if(!h.openSession(session))return 3;while(true){HANDLE handles[3]={h.stopEvent,h.frameEvent,h.bridgeProcess};DWORD count=h.bridgeProcess?3:2;DWORD w=WaitForMultipleObjects(count,handles,FALSE,INFINITE);if(w==WAIT_OBJECT_0||w==WAIT_OBJECT_0+2||InterlockedCompareExchange(&h.shared->stopRequested,0,0))break;if(w!=WAIT_OBJECT_0+1)continue;LONG cfg=InterlockedCompareExchange(&h.shared->configGeneration,0,0);if(cfg!=h.configSeen){h.configSeen=cfg;if(!h.configure()){InterlockedExchange(&h.shared->state,(LONG)State::Error);continue;}}h.processFrame();}return 0;}
+int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS);SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);const auto session=sessionArg();if(session.empty())return 2;Host h;if(!h.openSession(session))return 3;while(true){HANDLE handles[3]={h.stopEvent,h.frameEvent,h.bridgeProcess};DWORD count=h.bridgeProcess?3:2;DWORD w=WaitForMultipleObjects(count,handles,FALSE,INFINITE);if(w==WAIT_OBJECT_0||w==WAIT_OBJECT_0+2||InterlockedCompareExchange(&h.shared->stopRequested,0,0))break;if(w!=WAIT_OBJECT_0+1)continue;LONG cfg=InterlockedCompareExchange(&h.shared->configGeneration,0,0);if(cfg!=h.configSeen){h.configSeen=cfg;if(!h.configure()){InterlockedExchange(&h.shared->state,(LONG)State::Error);continue;}}h.processFrame();}return 0;}

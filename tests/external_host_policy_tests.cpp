@@ -16,5 +16,23 @@ int main() {
     assert(nrHostSequenceEnqueued(7, 7));
     assert(nrHostSequenceEnqueued(9, 7));
     assert(!nrHostSequenceEnqueued(6, 7));
+
+    // An output belongs to a frame only when BOTH the host publication and
+    // the shared GPU fence prove that exact request has completed. A later
+    // sequence must never be accepted as the output for an earlier frame.
+    assert(nrHostOutputReady(7, 7, 42, 42));
+    assert(nrHostOutputReady(7, 7, 99, 42));
+    assert(!nrHostOutputReady(6, 7, 99, 42));
+    assert(!nrHostOutputReady(8, 7, 99, 42));
+    assert(!nrHostOutputReady(7, 7, 41, 42));
+
+    assert(nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized) >= 33);
+    assert(nrHostOutputWaitBudgetMs(FramePacingMode::Adaptive) > 0);
+    assert(nrHostOutputWaitBudgetMs(FramePacingMode::Adaptive) < nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized));
+    assert(nrHostOutputWaitBudgetMs(FramePacingMode::Asynchronous) == 0);
+    assert(nrHostRemainingWaitBudgetMs(FramePacingMode::Synchronized, 0) == nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized));
+    assert(nrHostRemainingWaitBudgetMs(FramePacingMode::Synchronized, 12) == nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized)-12);
+    assert(nrHostRemainingWaitBudgetMs(FramePacingMode::Synchronized, 5000) == 0);
+    assert(nrHostRemainingWaitBudgetMs(FramePacingMode::Asynchronous, 0) == 0);
     return 0;
 }

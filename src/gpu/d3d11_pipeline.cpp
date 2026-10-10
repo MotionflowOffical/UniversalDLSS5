@@ -172,7 +172,15 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
         st.neuralBackendKind=NeuralBackendKind::Passthrough;
     };
     if(backend_&&backendMode_==s.backend&&runtime_==runtime&&attemptUnsupportedCached_==s.attemptUnsupportedHardware){
-        if(backendFallback_) applyFallback(); else wcsncpy_s(st.backendName,backend_->name(),_TRUNCATE);
+        if(backendFallback_) applyFallback();
+        else {
+            wcsncpy_s(st.backendName,backend_->name(),_TRUNCATE);
+            if(forceExternalHost_&&s.backend==BackendMode::InGameNR){
+                st.neuralLocation=NeuralExecutionLocation::ExternalHost;
+                st.neuralBackendKind=NeuralBackendKind::ExternalHost;
+                st.neuralApi=NeuralExecutionApi::D3D12;
+            }
+        }
         return true;
     }
     if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
@@ -301,7 +309,7 @@ bool D3D11Pipeline::blit(ID3D11Texture2D*bb,RuntimeStatus&st){
 
 bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std::wstring&runtime,RuntimeStatus&st,const GuideProbeResult* externalGuide,const SwapchainColorContext* colorContext){
     if(!bb||!settings.enabled)return false;
-    Settings effective=settings;const auto flowTuning=effectiveFlowTuning(settings);effective.flowDownsample=flowTuning.downsample;effective.flowSearchRadius=flowTuning.searchRadius;
+    Settings effective=settings;st.appliedDebugView=(std::uint32_t)settings.debugView;const auto flowTuning=effectiveFlowTuning(settings);effective.flowDownsample=flowTuning.downsample;effective.flowSearchRadius=flowTuning.searchRadius;
     D3D11_TEXTURE2D_DESC desc{};bb->GetDesc(&desc);
 
     // Probe and snapshot while the game's own D3D11 state is still current.

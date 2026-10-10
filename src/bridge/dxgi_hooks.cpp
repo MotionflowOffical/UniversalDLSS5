@@ -12,6 +12,7 @@
 #include "attach_logger.hpp"
 #include "udlss/renderer_activity.hpp"
 #include "hook_lifecycle.hpp"
+#include <atomic>
 #include <d3d11.h>
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -29,6 +30,7 @@
 #include "udlss/d3d12_recovery_policy.hpp"
 #include "udlss/d3d12_route_policy.hpp"
 #include "udlss/renderer_ownership_policy.hpp"
+#include "udlss/present_processing_policy.hpp"
 
 using Microsoft::WRL::ComPtr;
 namespace fs=std::filesystem;
@@ -47,14 +49,15 @@ using SetColorSpaceFn=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*,DXGI_COLOR_SP
 using SetHdrMetaFn=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain4*,DXGI_HDR_METADATA_TYPE,UINT,void*);
 using Resize1Fn=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*,UINT,UINT,UINT,DXGI_FORMAT,UINT,const UINT*,IUnknown*const*);
 PresentFn origPresent{};Present1Fn origPresent1{};ResizeFn origResize{};CreateSwapFn origCreateSwap{};CreateHwndFn origCreateHwnd{};CreateCoreFn origCreateCore{};CreateCompFn origCreateComp{};ExecuteFn origExecute{};SetFullscreenFn origSetFullscreen{};SetColorSpaceFn origSetColorSpace{};SetHdrMetaFn origSetHdrMeta{};Resize1Fn origResize1{};
-HMODULE self{};SharedControl* ctl{};std::mutex mx;IDXGISwapChain* primary{};thread_local bool inside{};
+HMODULE self{};SharedControl* ctl{};std::mutex mx;std::mutex guideSubmitMx;IDXGISwapChain* primary{};thread_local bool inside{};thread_local std::uint32_t presentDispatchDepth{};
+struct PresentCallDepthGuard{bool outermost{};PresentCallDepthGuard():outermost(presentDispatchDepth++==0){}~PresentCallDepthGuard(){--presentDispatchDepth;}};
 struct RecoveryQueueFence {
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
     std::uint64_t nextValue{1};
     std::uint64_t lastSignaled{};
 };
-struct SwapCtx{ComPtr<ID3D12CommandQueue> q12;ComPtr<ID3D12CommandQueue> queueCandidate;PresentQueueProofState queueProof{};D3D12RecoveryEvidence recovery{};std::unique_ptr<gpu::D3D11Pipeline> p11;std::unique_ptr<gpu::D3D12On12Pipeline> p12;std::unique_ptr<compat::CompatDispatch> compatDispatch;std::unique_ptr<compat::D3D10Frontend> d10Frontend;std::unordered_map<std::uintptr_t,RecoveryQueueFence> recoveryQueueFences;std::unordered_map<std::uintptr_t,std::uint64_t> recoveryFrameSignals;GenerationTracker resetGeneration;GenerationTracker neuralRetryGeneration;SafeAttachState safeAttach{};ColorTransitionState colorState{};GraphicsApi api{GraphicsApi::Unknown};DXGI_COLOR_SPACE_TYPE trackedColorSpace{DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};bool colorSpaceKnown{},d11TrackersInstalled{},d12TrackersInstalled{},guideHooksLogged{},safeLogged{},neuralLogged{},queueProofLogged{},backbuffersRegistered{},colorDirty{},hdrMetadataPresent{},driverLogged{},pipelineRecoveryMode{};float hdrMaxNits{1000.0f};HRESULT lastPresentResult{S_OK};HRESULT deviceRemovedReason{S_OK};std::uint64_t lastGuideHookProbeFrame{};std::uintptr_t pipelineQueueId{};std::uint32_t width{},height{};std::uint64_t frames{},processed{},bypassed{},neural{},nativeFrames{},compatFrames{},legacyCopies{},externalHostFrames{},lastTick{};double fps{};};
+struct SwapCtx{ComPtr<ID3D12CommandQueue> q12;ComPtr<ID3D12CommandQueue> queueCandidate;PresentQueueProofState queueProof{};D3D12RecoveryEvidence recovery{};std::unique_ptr<gpu::D3D11Pipeline> p11;std::unique_ptr<gpu::D3D12On12Pipeline> p12;std::unique_ptr<compat::CompatDispatch> compatDispatch;std::unique_ptr<compat::D3D10Frontend> d10Frontend;std::unordered_map<std::uintptr_t,RecoveryQueueFence> recoveryQueueFences;std::unordered_map<std::uintptr_t,std::uint64_t> recoveryFrameSignals;GenerationTracker resetGeneration;GenerationTracker neuralRetryGeneration;SafeAttachState safeAttach{};ColorTransitionState colorState{};GraphicsApi api{GraphicsApi::Unknown};DXGI_COLOR_SPACE_TYPE trackedColorSpace{DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};bool colorSpaceKnown{},d11TrackersInstalled{},d12TrackersInstalled{},guideHooksLogged{},safeLogged{},neuralLogged{},queueProofLogged{},backbuffersRegistered{},colorDirty{},hdrMetadataPresent{},driverLogged{},pipelineRecoveryMode{},presentMutationSuppressed{},presentResyncPending{};std::atomic_bool presentWorkBusy{false};float hdrMaxNits{1000.0f};HRESULT lastPresentResult{S_OK};HRESULT deviceRemovedReason{S_OK};std::uint64_t lastGuideHookProbeFrame{};std::uintptr_t pipelineQueueId{};std::uint32_t width{},height{};std::uint64_t frames{},processed{},bypassed{},neural{},nativeFrames{},compatFrames{},legacyCopies{},externalHostFrames{},lastTick{};std::int64_t lastPresentQpc{};double fps{};};
 std::unordered_map<IDXGISwapChain*,std::unique_ptr<SwapCtx>> swaps;
 std::unordered_map<ID3D12Resource*,IDXGISwapChain*> backbufferOwners;
 struct TrackingGuard{TrackingGuard(){gpu::setD3D11TrackingSuppressed(true);gpu::setD3D12TrackingSuppressed(true);gpu::setGameGuideCaptureSuppressed(true);}~TrackingGuard(){gpu::setGameGuideCaptureSuppressed(false);gpu::setD3D12TrackingSuppressed(false);gpu::setD3D11TrackingSuppressed(false);}};
@@ -106,15 +109,39 @@ std::vector<gpu::D3D12QueueWaitPoint> snapshotRecoveryQueueWaits(IDXGISwapChain*
 
 void STDMETHODCALLTYPE hookExecute(ID3D12CommandQueue*q,UINT n,ID3D12CommandList*const*l){
  HookCallScope call;if(!call.customWorkAllowed()){origExecute(q,n,l);return;}
+ const bool providerSnapshotsPending=gpu::pendingGameTemporalGuideSnapshotActive();
+ std::unique_lock<std::mutex> guideSubmitLock;
+ if(providerSnapshotsPending)guideSubmitLock=std::unique_lock<std::mutex>(guideSubmitMx);
  struct OwnerEvidence{IDXGISwapChain* owner{};bool legacy{};bool enhanced{};bool presentTransition{};};thread_local std::vector<OwnerEvidence> owners;owners.clear();
  if(q&&l&&gpu::d3d12QueueTouchCaptureEnabled()){
   for(UINT i=0;i<n;++i){auto touch=gpu::takeD3D12CommandListTouchInfo(l[i]);if(touch.resources.empty())continue;std::scoped_lock lock(mx);for(auto* r:touch.resources){auto it=backbufferOwners.find(r);if(it==backbufferOwners.end()||!it->second)continue;auto pos=std::find_if(owners.begin(),owners.end(),[&](const OwnerEvidence&e){return e.owner==it->second;});if(pos==owners.end())owners.push_back({it->second,touch.legacyBarrier,touch.enhancedBarrier,touch.presentTransition});else{pos->legacy|=touch.legacyBarrier;pos->enhanced|=touch.enhancedBarrier;pos->presentTransition|=touch.presentTransition;}}}
  }
- origExecute(q,n,l);for(const auto& e:owners){recordRecoveryQueueSubmission(e.owner,q);noteQueueEvidence(e.owner,q,false,e.legacy,e.enhanced,e.presentTransition);}
+ // A volatile provider snapshot must be submitted directly after the exact
+ // provider command list. Splitting one ExecuteCommandLists batch into ordered
+ // one-list submissions preserves D3D12 queue order without inserting GPU waits
+ // or mutating the game's command lists.
+ if(providerSnapshotsPending&&q&&l&&q->GetDesc().Type==D3D12_COMMAND_LIST_TYPE_DIRECT){
+  for(UINT i=0;i<n;++i){
+   origExecute(q,1,&l[i]);
+   gpu::snapshotPendingGameTemporalGuidesAfterExecute(q,l[i],origExecute);
+   gpu::noteGameTemporalGuideCommandListExecuted(l[i],queueIdentity(q));
+  }
+ }else{
+  origExecute(q,n,l);
+  if(l)for(UINT i=0;i<n;++i)gpu::noteGameTemporalGuideCommandListExecuted(l[i],queueIdentity(q));
+ }
+ for(const auto& e:owners){noteQueueEvidence(e.owner,q,false,e.legacy,e.enhanced,e.presentTransition);}
 }
 void rememberQueue(IDXGISwapChain*s,IUnknown*d){if(!s||!d)return;ComPtr<ID3D12CommandQueue>q;if(SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&q))))noteQueueEvidence(s,q.Get(),true);}
 void markColorDirty(IDXGISwapChain*s){if(!s)return;std::scoped_lock l(mx);auto&v=swaps[s];if(!v)v=std::make_unique<SwapCtx>();v->colorDirty=true;}
-void updateFps(SwapCtx&c){auto now=GetTickCount64();if(c.lastTick){double inst=1000.0/(double)std::max<std::uint64_t>(1,now-c.lastTick);c.fps=c.fps?c.fps*.9+inst*.1:inst;}c.lastTick=now;}
+void countSuccessfulPresent(IDXGISwapChain* s,UINT flags,HRESULT hr,bool outermost){
+ if(!s||!outermost||!shouldCountSuccessfulPresent((flags&DXGI_PRESENT_TEST)!=0,(long)hr))return;
+ LARGE_INTEGER now{},freq{};QueryPerformanceCounter(&now);QueryPerformanceFrequency(&freq);
+ std::scoped_lock lock(mx);auto it=swaps.find(s);if(it==swaps.end()||!it->second)return;auto&c=*it->second;
+ ++c.frames;c.lastTick=GetTickCount64();
+ if(c.lastPresentQpc&&freq.QuadPart>0&&now.QuadPart>c.lastPresentQpc){const double inst=(double)freq.QuadPart/(double)(now.QuadPart-c.lastPresentQpc);if(inst>0.0&&inst<2000.0)c.fps=c.fps?c.fps*.9+inst*.1:inst;}
+ c.lastPresentQpc=now.QuadPart;
+}
 void writeStatus(SwapCtx&c,RuntimeStatus&st){c.compatFrames=std::max(c.compatFrames,st.compatFrames);c.legacyCopies=std::max(c.legacyCopies,st.legacyCopies);c.externalHostFrames=std::max(c.externalHostFrames,st.externalHostFrames);st.pid=GetCurrentProcessId();st.presentedFrames=c.frames;st.processedFrames=c.processed;st.bypassedFrames=c.bypassed;st.neuralFrames=c.neural;st.nativeFrames=c.nativeFrames;st.compatFrames=c.compatFrames;st.legacyCopies=c.legacyCopies;st.externalHostFrames=c.externalHostFrames;st.estimatedFps=(float)c.fps;st.lastTickMs=GetTickCount64();if(ctl)ctl->writeStatus(st);}
 HRESULT queryDeviceRemovedReason(IDXGISwapChain* s){
  if(!s)return S_OK;ComPtr<ID3D12Device>d12;if(SUCCEEDED(s->GetDevice(IID_PPV_ARGS(&d12)))&&d12)return d12->GetDeviceRemovedReason();
@@ -125,13 +152,31 @@ void recordPresentResult(IDXGISwapChain* s,HRESULT hr){
  {std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()&&it->second){it->second->lastPresentResult=hr;it->second->deviceRemovedReason=removed;}}
  if(FAILED(hr)){wchar_t detail[256]{};swprintf_s(detail,L"Present failed: hr=0x%08X, deviceRemovedReason=0x%08X",(unsigned)hr,(unsigned)removed);logAttachStage(AttachLogStage::Failure,detail);}
 }
+void resetPipelinesForPresentResync(SwapCtx& c){
+ if(c.p11)c.p11->reset();
+ if(c.p12)c.p12->reset();
+ if(c.compatDispatch)c.compatDispatch->reset();
+ if(c.d10Frontend)c.d10Frontend->reset();
+ c.recoveryFrameSignals.clear();
+ c.safeAttach.stablePresents=1;
+}
+bool presentMutationSuppressed(IDXGISwapChain* s){
+ if(!s)return false;std::scoped_lock l(mx);auto it=swaps.find(s);return it!=swaps.end()&&it->second&&it->second->presentMutationSuppressed;
+}
+void updatePresentMutationState(IDXGISwapChain* s,UINT flags,HRESULT hr,bool mutationAttempted){
+ if(!s)return;const bool testPresent=(flags&DXGI_PRESENT_TEST)!=0;const bool doNotWait=(flags&DXGI_PRESENT_DO_NOT_WAIT)!=0;
+ if(testPresent||doNotWait)return;
+ auto& c=getCtx(s);
+ if(mutationAttempted&&shouldArmPresentSuppression((long)hr)){c.presentMutationSuppressed=true;return;}
+ if(!mutationAttempted&&c.presentMutationSuppressed&&shouldClearPresentSuppression((long)hr)){c.presentMutationSuppressed=false;c.presentResyncPending=true;}
+}
 void probeGameGuideHooks(SwapCtx& c){
  if(c.lastGuideHookProbeFrame && c.frames-c.lastGuideHookProbeFrame<120)return;
  c.lastGuideHookProbeFrame=c.frames;
  if(gpu::installGameTemporalGuideHooks()&&!c.guideHooksLogged){c.guideHooksLogged=true;logAttachStage(AttachLogStage::GameGuideHooksInstalled);}
 }
 bool process(IDXGISwapChain*s){
- if(!ctl||!ctl->valid()||inside)return false;setCrashStage(CrashStage::ProcessEntry);inside=true;Settings set=ctl->readSettings();auto&c=getCtx(s);++c.frames;updateFps(c);RuntimeStatus st{};st.pid=GetCurrentProcessId();st.state=RuntimeState::Hooked;st.lastTickMs=GetTickCount64();markPipelineStage(st.stageMask,PipelineStage::BridgeInjected);markPipelineStage(st.stageMask,PipelineStage::HooksInstalled);markPipelineStage(st.stageMask,PipelineStage::PresentObserved);if(!c.safeAttach.firstPresentTickMs){c.safeAttach.firstPresentTickMs=st.lastTickMs;logAttachStage(AttachLogStage::PresentObserved);}++c.safeAttach.stablePresents;
+ if(!ctl||!ctl->valid()||inside)return false;setCrashStage(CrashStage::ProcessEntry);inside=true;Settings set=ctl->readSettings();auto&c=getCtx(s);if(c.presentResyncPending){resetPipelinesForPresentResync(c);c.presentResyncPending=false;}RuntimeStatus st{};st.pid=GetCurrentProcessId();st.state=RuntimeState::Hooked;st.lastTickMs=GetTickCount64();markPipelineStage(st.stageMask,PipelineStage::BridgeInjected);markPipelineStage(st.stageMask,PipelineStage::HooksInstalled);markPipelineStage(st.stageMask,PipelineStage::PresentObserved);if(!c.safeAttach.firstPresentTickMs){c.safeAttach.firstPresentTickMs=st.lastTickMs;logAttachStage(AttachLogStage::PresentObserved);}++c.safeAttach.stablePresents;
  if(!set.enabled){st.state=RuntimeState::Bypassed;++c.bypassed;wcscpy_s(st.message,L"processing disabled");writeStatus(c,st);inside=false;return false;}
  const auto resetGen=ctl->historyResetGeneration();if(c.resetGeneration.consume(resetGen)){if(c.p11)c.p11->reset();if(c.p12)c.p12->reset();}
  const auto retryGen=ctl->neuralRetryGeneration();if(c.neuralRetryGeneration.consume(retryGen)){if(c.p11)c.p11->retryNeural();if(c.p12)c.p12->retryNeural();}
@@ -174,9 +219,9 @@ bool process(IDXGISwapChain*s){
   ComPtr<ID3D12Device>d12;
   if(SUCCEEDED(s->GetDevice(IID_PPV_ARGS(&d12)))){
    st.api=GraphicsApi::D3D12;c.api=st.api;observeProcessNativeRenderer(st.api);st.rendererRoute=RendererRoute::ModernD3D12Recovery;st.compatInterop=CompatInterop::D3D12On12;markPipelineStage(st.stageMask,PipelineStage::SourceApiDetected);
-   // Before exact queue proof, retain only provider-declared Present-safe
-   // Streamline tags. Heuristic/NGX transient resources remain isolated.
-   gpu::setGameTemporalGuideCaptureMode(gpu::GameTemporalGuideCaptureMode::PresentSafeOnly);
+   // Capture mode is selected once below from the proven renderer route.
+   // Do not temporarily switch modes at Present: captures are produced during
+   // the game frame before Present, and changing modes here clears them.
    gpu::setD3D12SemanticResourceTrackingEnabled(false);
    if(!c.safeLogged)logAttachStage(AttachLogStage::SourceD3D12Detected);
    if(!c.driverLogged){const auto di=neural::queryNvidiaDriverInfo();if(di.found){std::wstring detail=di.text;if(di.directFeature18Risk)detail+=L" | known direct Feature-18 crash-risk route";logAttachStage(AttachLogStage::NvidiaDriverDetected,detail);}c.driverLogged=true;}
@@ -192,18 +237,19 @@ bool process(IDXGISwapChain*s){
    const bool retainGameTemporalResources=provenQueue&&!recoveryMode;
    gpu::setGameTemporalGuideCaptureMode(retainGameTemporalResources?gpu::GameTemporalGuideCaptureMode::Full:gpu::GameTemporalGuideCaptureMode::SnapshotOnly);
    gpu::setD3D12SemanticResourceTrackingEnabled(retainGameTemporalResources);
+   // Install provider hooks before the safe-attach gate. Streamline/NGX can
+   // publish temporal inputs while the presentation route is still stabilizing.
+   probeGameGuideHooks(c);
    if(!safeAttachReady(c.safeAttach,st.lastTickMs,true)){st.state=RuntimeState::Bypassed;++c.bypassed;wcscpy_s(st.message,c.safeAttach.queueCaptured?L"safe attach: stabilizing proven D3D12 presentation queue":L"safe attach: waiting for proven swapchain presentation queue");writeStatus(c,st);inside=false;return false;}
    if(!c.safeLogged){logAttachStage(AttachLogStage::SafeAttachStable,recoveryMode?L"D3D12 recovery route stable; volatile provider guides are snapshotted into injector-owned resources":L"D3D12 exact presentation queue and swapchain stable");c.safeLogged=true;}
    probeGameGuideHooks(c);
    gpu::globalD3D12ResourceTracker().finalizeFrame(d12.Get(),st.width,st.height);
-   std::vector<gpu::D3D12QueueWaitPoint> recoveryWaits;if(recoveryMode)recoveryWaits=snapshotRecoveryQueueWaits(s);
    if(provenQueue&&set.allowD3D11On12){
     if(c.p12&&(c.pipelineQueueId!=provenQueueId||c.pipelineRecoveryMode!=recoveryMode)){c.p12->reset();c.p12.reset();c.pipelineQueueId=0;c.pipelineRecoveryMode=false;}
     if(!c.p12){c.p12=std::make_unique<gpu::D3D12On12Pipeline>();if(!c.p12->initialize(provenQueue.Get(),moduleDir(),st,recoveryMode)){if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::GuideResourcesFailed;c.p12.reset();c.pipelineQueueId=0;c.pipelineRecoveryMode=false;}else{c.pipelineQueueId=provenQueueId;c.pipelineRecoveryMode=recoveryMode;logAttachStage(AttachLogStage::D3D12On12Initialized,recoveryMode?L"same-queue shared D3D12/D3D11 recovery + x64 NRHost isolation":L"owned color staging on exact presentation queue");}}
-    if(c.p12){TrackingGuard guard;ok=c.p12->process(s,set,runtimePath(),st,&color,synchronizeRecoveryBeforePresent,recoveryMode?&recoveryWaits:nullptr);}
+    if(c.p12){TrackingGuard guard;ok=c.p12->process(s,set,runtimePath(),st,&color,synchronizeRecoveryBeforePresent,nullptr);}
    }
    else{st.failureStage=PipelineStage::QueueCaptureFailed;wcscpy_s(st.message,L"D3D12 source detected but no proven presenting DIRECT queue is available, or D3D11On12 is disabled");}
-   if(recoveryMode)gpu::releaseCapturedGameTemporalGuides();
   }else{
    ComPtr<ID3D10Device> d10;
    if(SUCCEEDED(s->GetDevice(IID_PPV_ARGS(&d10)))&&d10){
@@ -218,8 +264,26 @@ bool process(IDXGISwapChain*s){
  setCrashStage(CrashStage::ProcessComplete);
  if(ok){++c.processed;if(isNativeRendererRoute(st.rendererRoute))++c.nativeFrames;if(st.neuralActive){++c.neural;st.state=RuntimeState::Processing;if(!c.neuralLogged){logAttachStage(AttachLogStage::NeuralProcessingStarted);c.neuralLogged=true;}}else{++c.bypassed;st.state=RuntimeState::Bypassed;}}else{++c.bypassed;st.state=st.failureStage==PipelineStage::None?RuntimeState::Bypassed:RuntimeState::Error;}writeStatus(c,st);inside=false;return ok;
 }
-HRESULT STDMETHODCALLTYPE hookPresent(IDXGISwapChain*s,UINT sync,UINT flags){noteRendererActivity();HookCallScope call;if(!call.customWorkAllowed())return origPresent(s,sync,flags);process(s);setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent(s,sync,flags);setCrashStage(CrashStage::PresentReturned);recordPresentResult(s,hr);setCrashStage(CrashStage::Idle);return hr;}
-HRESULT STDMETHODCALLTYPE hookPresent1(IDXGISwapChain1*s,UINT sync,UINT flags,const DXGI_PRESENT_PARAMETERS*p){noteRendererActivity();HookCallScope call;if(!call.customWorkAllowed())return origPresent1(s,sync,flags,p);process(s);setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent1(s,sync,flags,p);setCrashStage(CrashStage::PresentReturned);recordPresentResult(s,hr);setCrashStage(CrashStage::Idle);return hr;}
+bool tryBeginPresentWork(IDXGISwapChain* s){if(!s)return false;auto&c=getCtx(s);bool expected=false;return c.presentWorkBusy.compare_exchange_strong(expected,true,std::memory_order_acq_rel);}
+void endPresentWork(IDXGISwapChain* s){if(!s)return;auto&c=getCtx(s);c.presentWorkBusy.store(false,std::memory_order_release);}
+HRESULT STDMETHODCALLTYPE hookPresent(IDXGISwapChain*s,UINT sync,UINT flags){
+ PresentCallDepthGuard presentDispatch;noteRendererActivity();HookCallScope call;if(!call.customWorkAllowed())return origPresent(s,sync,flags);
+ const bool testPresent=(flags&DXGI_PRESENT_TEST)!=0,doNotWait=(flags&DXGI_PRESENT_DO_NOT_WAIT)!=0;
+ const bool wantsMutation=shouldProcessPresentBeforeMutation(testPresent,doNotWait,presentMutationSuppressed(s));
+ const bool ownsWork=wantsMutation&&tryBeginPresentWork(s);
+ if(ownsWork)process(s);
+ setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent(s,sync,flags);setCrashStage(CrashStage::PresentReturned);
+ recordPresentResult(s,hr);countSuccessfulPresent(s,flags,hr,presentDispatch.outermost);updatePresentMutationState(s,flags,hr,ownsWork);if(ownsWork)endPresentWork(s);setCrashStage(CrashStage::Idle);return hr;
+}
+HRESULT STDMETHODCALLTYPE hookPresent1(IDXGISwapChain1*s,UINT sync,UINT flags,const DXGI_PRESENT_PARAMETERS*p){
+ PresentCallDepthGuard presentDispatch;noteRendererActivity();HookCallScope call;if(!call.customWorkAllowed())return origPresent1(s,sync,flags,p);
+ const bool testPresent=(flags&DXGI_PRESENT_TEST)!=0,doNotWait=(flags&DXGI_PRESENT_DO_NOT_WAIT)!=0;
+ const bool wantsMutation=shouldProcessPresentBeforeMutation(testPresent,doNotWait,presentMutationSuppressed(s));
+ const bool ownsWork=wantsMutation&&tryBeginPresentWork(s);
+ if(ownsWork)process(s);
+ setCrashStage(CrashStage::CallingPresent);const auto hr=origPresent1(s,sync,flags,p);setCrashStage(CrashStage::PresentReturned);
+ recordPresentResult(s,hr);countSuccessfulPresent(s,flags,hr,presentDispatch.outermost);updatePresentMutationState(s,flags,hr,ownsWork);if(ownsWork)endPresentWork(s);setCrashStage(CrashStage::Idle);return hr;
+}
 HRESULT STDMETHODCALLTYPE hookResize(IDXGISwapChain*s,UINT count,UINT w,UINT h,DXGI_FORMAT f,UINT flags){HookCallScope call;if(!call.customWorkAllowed())return origResize(s,count,w,h,f,flags);{std::scoped_lock l(mx);auto it=swaps.find(s);if(it!=swaps.end()){if(it->second->p11)it->second->p11->reset();if(it->second->p12)it->second->p12->reset();if(it->second->compatDispatch)it->second->compatDispatch->reset();if(it->second->d10Frontend)it->second->d10Frontend->reset();it->second->backbuffersRegistered=false;it->second->colorDirty=true;it->second->recoveryFrameSignals.clear();}unregisterSwapchainBackbuffersLocked(s);if(primary==s)primary=nullptr;}refreshQueueTouchCapture();return origResize(s,count,w,h,f,flags);}
 HRESULT STDMETHODCALLTYPE hookSetFullscreen(IDXGISwapChain*s,BOOL full,IDXGIOutput*o){HookCallScope call;auto hr=origSetFullscreen(s,full,o);if(call.customWorkAllowed()&&SUCCEEDED(hr))markColorDirty(s);return hr;}
 HRESULT STDMETHODCALLTYPE hookSetColorSpace(IDXGISwapChain3*s,DXGI_COLOR_SPACE_TYPE color){

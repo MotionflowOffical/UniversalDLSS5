@@ -12,7 +12,7 @@ cbuffer NativeMotionParams : register(b0)
     float InputToPixelScaleY;
     float Padding;
 };
-Texture2D<float2> NativeMotion : register(t0);
+Texture2D<float4> NativeMotion : register(t0);
 RWTexture2D<float2> MotionOut : register(u0);
 static const uint PixelCurrentToPrevious = 1;
 static const uint UnityUvPreviousToCurrent = 2;
@@ -23,7 +23,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     uint sw,sh; NativeMotion.GetDimensions(sw,sh);
     if(sw==0 || sh==0) { MotionOut[id.xy]=0; return; }
     uint2 src=min(uint2(sw-1,sh-1),uint2((id.x+0.5)*(float)sw/(float)Width,(id.y+0.5)*(float)sh/(float)Height));
-    float2 raw=NativeMotion.Load(int3(src,0));
+    float2 raw=NativeMotion.Load(int3(src,0)).xy;
     float2 sourcePixels=raw;
     if(Encoding==UnityUvPreviousToCurrent)
         sourcePixels=-raw*float2((float)sw,(float)sh);

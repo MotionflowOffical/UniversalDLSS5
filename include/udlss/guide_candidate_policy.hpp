@@ -21,6 +21,23 @@ inline bool guideExtentAspectCompatible(std::uint32_t width,std::uint32_t height
     return sx>=0.45 && sx<=1.05 && sy>=0.45 && sy<=1.05;
 }
 
+
+// Explicit provider guides come from a known DLSS/Streamline integration, so
+// their resolution may legitimately follow the game's internal render scale.
+// Keep heuristic discovery conservative, but accept provider-tagged guides down
+// to roughly one-third linear resolution (DLSS performance-class inputs).
+inline bool providerGuideExtentCompatible(std::uint32_t width,std::uint32_t height,
+                                          std::uint32_t targetWidth,std::uint32_t targetHeight) {
+    if(!width||!height||!targetWidth||!targetHeight) return false;
+    const double aspect=double(width)/double(height);
+    const double targetAspect=double(targetWidth)/double(targetHeight);
+    const double aspectError=std::abs(aspect-targetAspect)/std::max(0.001,targetAspect);
+    if(aspectError>0.035) return false;
+    const double sx=double(width)/double(targetWidth);
+    const double sy=double(height)/double(targetHeight);
+    return sx>=0.30 && sx<=1.05 && sy>=0.30 && sy<=1.05;
+}
+
 inline std::uint32_t scoreTemporalMotionCandidate(const NativeMotionCandidateMeta& m,
                                                   std::uint32_t targetWidth,
                                                   std::uint32_t targetHeight,

@@ -1,6 +1,10 @@
+## Runtime safety improvements
+
+Runtime SDK DLL imports use verification and atomic replacement. Graphics hooks, guide capture, and external-host compatibility improvements are included.
+
 # UniversalDLSS5
 
-**Current version:** v0.4.3  
+**Current version:** v0.4.4  
 **Status:** Experimental Windows graphics injector/controller
 
 UniversalDLSS5 is an experimental project that brings NVIDIA DLSS Neural Rendering / Feature 18 to games and applications that do not expose the feature natively. It hooks the game's presentation API, builds the required color/temporal inputs, executes the neural path, and composites the result back into the original renderer.
@@ -22,7 +26,7 @@ Modern D3D11/D3D12 games that already work stay on their existing low-latency pa
 
 For **32-bit** games, the x86 bridge captures the renderer while the real Feature 18 work runs in the 64-bit `UniversalDLSS5.NRHost.exe` process.
 
-## v0.4.3 highlights
+## v0.4.4 highlights
 
 - D3D9, D3D10, D3D11, D3D12, OpenGL and Vulkan renderer routing.
 - x86 game support through the x64 Feature 18 host.
@@ -31,7 +35,7 @@ For **32-bit** games, the x86 bridge captures the renderer while the real Featur
 - Safer quiescent manual detach.
 - Real Feature 18 GPU timing in diagnostics.
 - Game-provided motion/depth support where lifetime is safe.
-- Late-attach D3D12 recovery snapshots short-lived Streamline motion/depth immediately into UniversalDLSS5-owned resources, so Cyberpunk-style volatile guides can be used without retaining engine resources.
+- Late-attach D3D12 recovery no longer injects cross-queue waits or mutates game command lists. Present-safe Streamline guides are used directly; shorter-lived Streamline depth/motion can be snapshotted by an injector-owned command list submitted immediately after the provider list on the same D3D12 queue.
 - **1x-4x NR passes** work on both in-process and x64 NRHost routes; passes above 1 use a separate reset-only refinement feature with scratch ping-pong.
 - NVOFA, camera/depth and HLSL optical-flow fallbacks remain available when native game guides cannot be used safely.
 
@@ -55,7 +59,7 @@ UniversalDLSS5 prefers reliable game data when available:
 - NVIDIA Optical Flow as the universal motion fallback;
 - HLSL optical flow and zero-motion fallback modes.
 
-For late-attached D3D12 recovery, transient game resources are never held across the frame. Streamline motion/depth tagged as short-lived or valid through Present are copied immediately in the provider command buffer into injector-owned textures; heuristic and unsafe game resources remain diagnostic-only. This keeps the UE5 lifetime protection while restoring usable game vectors/depth in titles such as Cyberpunk 2077.
+For late-attached D3D12 recovery, guide capture stays generation-tracked. Present-safe Streamline resources are used directly. Shorter-lived Streamline depth/motion are kept only as non-owning metadata until the provider command list is submitted, then copied into UniversalDLSS5-owned textures by a separate command list appended to that same queue. NGX transient resources and heuristic game-owned resources remain excluded from recovery. If recovery D3D11 work is still outstanding, the frame is bypassed safely instead of blocking Present for several seconds.
 
 The **NR passes** control supports 1x-4x processing on both direct and external-host routes. Pass 1 is temporal; additional passes use a separate reset-only refinement feature and local scratch resource.
 
@@ -112,7 +116,7 @@ The build produces x64 components plus the x86 bridge/injector required for 32-b
 
 ## Documentation
 
-- [`docs/V0.4.3_RELEASE.md`](docs/V0.4.3_RELEASE.md) — current release notes
+- [`docs/V0.4.4_RELEASE.md`](docs/V0.4.4_RELEASE.md) — current release notes
 - [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) — NVIDIA runtime import/setup
 - [`docs/GAME_GUIDES_SAFE_ATTACH.md`](docs/GAME_GUIDES_SAFE_ATTACH.md) — temporal-guide and safe-attach notes
 - [`docs/V0.4.0_RELEASE.md`](docs/V0.4.0_RELEASE.md) — renderer compatibility architecture

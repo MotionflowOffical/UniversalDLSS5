@@ -23,8 +23,8 @@ int main() {
     const std::filesystem::path root = UDLSS_SOURCE_DIR;
     const auto cmake = readFile(root / "CMakeLists.txt");
     const auto buildScript = readFile(root / "BUILD_WINDOWS.bat");
-    if (cmake.find("project(UniversalDLSS5 VERSION 0.4.3") == std::string::npos ||
-        buildScript.find("UniversalDLSS5 v0.4.3") == std::string::npos ||
+    if (cmake.find("project(UniversalDLSS5 VERSION 0.4.4") == std::string::npos ||
+        buildScript.find("UniversalDLSS5 v0.4.4") == std::string::npos ||
         buildScript.find("-DUDLSS_WITH_STREAMLINE=ON") == std::string::npos) {
         std::cerr << "v0.2.8 Windows build does not enable the direct in-game Streamline mount/header path\n";
         return 1;
@@ -179,6 +179,13 @@ int main() {
         externalHost.find("NRHost warm-up/busy") == std::string::npos ||
         externalHost.find("woke the bridge without enqueueing the output fence signal") != std::string::npos) {
         std::cerr << "External NR host still treats an event wake as proof that the current frame was enqueued\n";
+        return 1;
+    }
+
+    if (externalHost.find("kEnqueueBudgetMs=12") != std::string::npos ||
+        externalHost.find("nrHostRemainingWaitBudgetMs") == std::string::npos ||
+        hostMain.find("InterlockedExchange(&shared->enqueuedSeq,seq);SetEvent(doneEvent);") == std::string::npos) {
+        std::cerr << "External NR host still has the fixed enqueue timeout or delays enqueue publication\n";
         return 1;
     }
 

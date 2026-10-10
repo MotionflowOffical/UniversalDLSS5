@@ -31,6 +31,12 @@ private:
   UINT width{},height{};
   DXGI_FORMAT resourceFormat{DXGI_FORMAT_UNKNOWN};
   DXGI_FORMAT viewFormat{DXGI_FORMAT_UNKNOWN};
+  HRESULT lastInteropHr{S_OK};
+  std::uint32_t interopPath{};
+  std::uint32_t failureOperation{};  // 1=alloc, 2=NT handle, 3=D3D11 open, 4=desc, 5=copy/queue
+  std::uint32_t candidateAttempts{};
+  DXGI_FORMAT triedFormat{DXGI_FORMAT_UNKNOWN};
+  bool directOwned{};
  };
  bool ensureCopyInfrastructure(RuntimeStatus& status);
  bool ensureOwnedColor(const D3D12_RESOURCE_DESC& backbufferDesc,RuntimeStatus& status);
@@ -38,6 +44,7 @@ private:
  bool waitRecoveryD3D11(RuntimeStatus& status);
  bool waitCopyContext(CopyContext& context,RuntimeStatus& status);
  bool submitBackbufferCopy(ID3D12Resource* backbuffer,bool intoOwned,RuntimeStatus& status);
+ bool openOwnedSnapshotDirect(ID3D12Resource* source,DXGI_FORMAT viewFormat,bool depth,RecoveryGuideSurface& surface,RuntimeStatus& status);
  bool stageRecoveryGuide(ID3D12Resource* source,D3D12_RESOURCE_STATES sourceState,DXGI_FORMAT viewFormat,bool depth,RecoveryGuideSurface& surface,RuntimeStatus& status);
  bool enqueueRecoveryWaits(const std::vector<D3D12QueueWaitPoint>* waits,RuntimeStatus& status);
  Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
@@ -51,6 +58,8 @@ private:
  Microsoft::WRL::ComPtr<ID3D11Fence> recoveryD11Fence_;
  HANDLE recoveryD11FenceEvent_{};
  std::uint64_t recoveryD11FenceValue_{1};
+ std::uint64_t recoveryD11PendingValue_{};
+ std::uintptr_t recoveryQueueId_{};
  Microsoft::WRL::ComPtr<ID3D12Resource> ownedColor12_;
  Microsoft::WRL::ComPtr<ID3D11Texture2D> ownedColor11_;
  RecoveryGuideSurface recoveryDepthGuide_{},recoveryMotionGuide_{};

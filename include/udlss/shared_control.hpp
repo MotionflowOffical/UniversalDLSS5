@@ -9,7 +9,7 @@
 
 namespace udlss {
 constexpr std::uint32_t kControlMagic = 0x35534C44u; // DLS5
-constexpr std::uint32_t kControlAbi = 20;
+constexpr std::uint32_t kControlAbi = 21;
 constexpr wchar_t kControlMapName[] = L"Local\\UniversalDLSS5.Control.v1";
 
 enum class GraphicsApi : std::uint32_t { Unknown=0, D3D9=9, D3D10=10, D3D11=11, D3D12=12, OpenGL=0x1000, Vulkan=0x1001 };
@@ -42,6 +42,8 @@ struct RuntimeStatus {
     std::uint32_t colorPathHeight{};
     std::uint32_t queueProofConfidence{};
     std::uint32_t neuralActive{};
+    std::uint32_t appliedDebugView{};
+    std::uint32_t recoveryPostCopyCommitted{};
     float lastGpuMs{};
     float estimatedFps{};
     std::uint64_t lastTickMs{};

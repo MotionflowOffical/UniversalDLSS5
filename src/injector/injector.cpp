@@ -87,11 +87,15 @@ LPTHREAD_START_ROUTINE resolveRemoteProcAddress(DWORD pid, FARPROC localProc) {
     return reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteOwner + rva);
 }
 
-enum class RemoteWaitResult { Completed, TargetExited, Failed };
+enum class RemoteWaitResult { Completed, TargetExited, TimedOut, Failed };
 
 RemoteWaitResult waitForRemoteThread(DWORD pid, HANDLE process, HANDLE thread, const wchar_t* operation) {
     HANDLE handles[2]{thread, process};
-    ULONGLONG lastProgress = GetTickCount64();
+    const ULONGLONG start=GetTickCount64();
+    ULONGLONG lastProgress=start;
+    // Bounded controller wait: do not terminate remote threads or free memory
+    // while the target might still be accessing that memory.
+    constexpr ULONGLONG kRemoteThreadMaximumWaitMs=30000;
     for (;;) {
         const DWORD wait = WaitForMultipleObjects(2, handles, FALSE, 1000);
         if (wait == WAIT_OBJECT_0) return RemoteWaitResult::Completed;
@@ -101,6 +105,10 @@ RemoteWaitResult waitForRemoteThread(DWORD pid, HANDLE process, HANDLE thread, c
         }
         if (wait == WAIT_TIMEOUT) {
             const auto now = GetTickCount64();
+            if(now-start >= kRemoteThreadMaximumWaitMs) {
+                logInjection(pid, std::wstring(operation) + L": timeout; remote work may still be pending");
+                return RemoteWaitResult::TimedOut;
+            }
             if (now - lastProgress >= 5000) {
                 logInjection(pid, std::wstring(operation) + L": still pending; keeping remote state alive");
                 lastProgress = now;
@@ -157,7 +165,7 @@ bool invokeBridgeStart(DWORD pid, HANDLE process, std::uintptr_t remoteBridgeBas
         CloseHandle(startThread);
         message = wait == RemoteWaitResult::TargetExited
             ? L"target exited while BridgeStart was pending"
-            : L"BridgeStart wait failed";
+            : (wait == RemoteWaitResult::TimedOut ? L"BridgeStart is still pending after 30 seconds; no remote thread termination performed" : L"BridgeStart wait failed");
         return false;
     }
 
@@ -262,7 +270,9 @@ int injectDll(DWORD pid, const std::wstring& dll, std::wstring& msg) {
             // is already gone; otherwise a tiny allocation leak is safer than UAF.
             msg = loadWait == RemoteWaitResult::TargetExited
                 ? L"target exited while LoadLibraryW was pending"
-                : L"LoadLibraryW wait failed; remote path intentionally retained";
+                : (loadWait == RemoteWaitResult::TimedOut
+                    ? L"LoadLibraryW is still pending after 30 seconds; remote path retained to avoid use-after-free"
+                    : L"LoadLibraryW wait failed; remote path intentionally retained");
             logInjection(pid, msg);
             CloseHandle(process);
             return 9;

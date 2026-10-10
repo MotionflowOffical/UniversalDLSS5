@@ -30,7 +30,8 @@ bool exactTexture(ID3D11Texture2D* t,UINT w,UINT h,DXGI_FORMAT fmt){
 bool motionTextureUsable(ID3D11Texture2D* t,UINT targetW,UINT targetH){
     if(!t)return false;D3D11_TEXTURE2D_DESC d{};t->GetDesc(&d);
     if(d.SampleDesc.Count!=1||!guideExtentAspectCompatible(d.Width,d.Height,targetW,targetH))return false;
-    return d.Format==DXGI_FORMAT_R16G16_FLOAT||d.Format==DXGI_FORMAT_R16G16_SNORM||d.Format==DXGI_FORMAT_R32G32_FLOAT;
+    return d.Format==DXGI_FORMAT_R16G16_FLOAT||d.Format==DXGI_FORMAT_R16G16_SNORM||d.Format==DXGI_FORMAT_R32G32_FLOAT||
+           d.Format==DXGI_FORMAT_R16G16B16A16_FLOAT||d.Format==DXGI_FORMAT_R16G16B16A16_SNORM||d.Format==DXGI_FORMAT_R32G32B32A32_FLOAT;
 }
 std::wstring gameDir(){wchar_t p[32768]{};DWORD n=GetModuleFileNameW(nullptr,p,_countof(p));return n?fs::path(std::wstring(p,n)).parent_path().wstring():L"";}
 const wchar_t* sourceName(GameGuideSource s){
@@ -105,7 +106,9 @@ void D3D11GuideExtractor::probe(ID3D11Texture2D* backbuffer,const Settings& sett
 }
 bool D3D11GuideExtractor::prepareDepth(const GuideProbeResult& p,UINT w,UINT h,ID3D11ShaderResourceView** srv,bool& inverted,RuntimeStatus& status){
     if(srv)*srv=nullptr;if(!p.depth)return false;D3D11_TEXTURE2D_DESC src{};p.depth->GetDesc(&src);DXGI_FORMAT resourceFmt{},srvFmt{};if(!depthFormats(p.depthViewFormat,resourceFmt,srvFmt))return false;
-    if(!guideExtentAspectCompatible(src.Width,src.Height,w,h)||src.SampleDesc.Count!=1)return false;
+    const bool explicitProvider=p.source==GameGuideSource::Streamline||p.source==GameGuideSource::Ngx||p.source==GameGuideSource::GameAdapter;
+    const bool extentOk=explicitProvider?providerGuideExtentCompatible(src.Width,src.Height,w,h):guideExtentAspectCompatible(src.Width,src.Height,w,h);
+    if(!extentOk||src.SampleDesc.Count!=1)return false;
     if(!depthCopy_||depthCopyWidth_!=src.Width||depthCopyHeight_!=src.Height||depthCopySource_!=p.depthViewFormat){
         depthCopy_.Reset();depthSrv_.Reset();D3D11_TEXTURE2D_DESC d=src;d.Format=resourceFmt;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;d.CPUAccessFlags=0;d.Usage=D3D11_USAGE_DEFAULT;d.MiscFlags=0;
         if(FAILED(device_->CreateTexture2D(&d,nullptr,&depthCopy_)))return false;D3D11_SHADER_RESOURCE_VIEW_DESC sd{};sd.Format=srvFmt;sd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;sd.Texture2D.MipLevels=1;

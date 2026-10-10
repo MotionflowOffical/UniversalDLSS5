@@ -9,5 +9,8 @@ int main(){
     assert(guideCaptureFresh(1000,1450,500));
     assert(!guideCaptureFresh(1000,1501,500));
     assert(!guideCaptureFresh(0,1200,500));
+    assert(shouldConsumeGuideGeneration(41,41));
+    assert(!shouldConsumeGuideGeneration(42,41));
+    assert(!shouldConsumeGuideGeneration(0,0));
     return 0;
 }

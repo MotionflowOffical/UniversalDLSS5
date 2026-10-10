@@ -56,6 +56,30 @@ bool duplicateIntoProcess(HANDLE source,HANDLE targetProcess,std::uint64_t& wire
 }
 
 enum class EnqueueWaitResult { Ready, Timeout, HostExited, HostError, WaitFailed };
+enum class OutputWaitResult { Ready, Timeout, HostExited, HostError, WaitFailed, SequenceMismatch };
+
+OutputWaitResult waitForExactOutput(hostipc::Shared* shared,ID3D11Fence* fence,HANDLE fenceEvent,HANDLE hostProcess,LONG requestedSeq,UINT64 outputValue,DWORD timeoutMs) {
+    if(!shared||!fence||!fenceEvent||!outputValue)return OutputWaitResult::WaitFailed;
+    auto exactReady=[&](){
+        const LONG completed=InterlockedCompareExchange(&shared->completedSeq,0,0);
+        return nrHostOutputReady(completed,requestedSeq,fence->GetCompletedValue(),outputValue);
+    };
+    if(exactReady())return OutputWaitResult::Ready;
+    if(timeoutMs==0)return OutputWaitResult::Timeout;
+    if(hostProcess&&WaitForSingleObject(hostProcess,0)==WAIT_OBJECT_0)return OutputWaitResult::HostExited;
+    const auto state=static_cast<hostipc::State>(InterlockedCompareExchange(&shared->state,0,0));
+    if(state==hostipc::State::Error||state==hostipc::State::Stopping)return OutputWaitResult::HostError;
+    if(FAILED(fence->SetEventOnCompletion(outputValue,fenceEvent)))return OutputWaitResult::WaitFailed;
+    HANDLE waits[]={fenceEvent,hostProcess};
+    const DWORD count=hostProcess?2u:1u;
+    const DWORD w=WaitForMultipleObjects(count,waits,FALSE,timeoutMs);
+    if(w==WAIT_TIMEOUT)return OutputWaitResult::Timeout;
+    if(w==WAIT_FAILED)return OutputWaitResult::WaitFailed;
+    if(hostProcess&&w==WAIT_OBJECT_0+1)return OutputWaitResult::HostExited;
+    const LONG completed=InterlockedCompareExchange(&shared->completedSeq,0,0);
+    if(nrHostOutputReady(completed,requestedSeq,fence->GetCompletedValue(),outputValue))return OutputWaitResult::Ready;
+    return completed==requestedSeq?OutputWaitResult::Timeout:OutputWaitResult::SequenceMismatch;
+}
 
 EnqueueWaitResult waitForEnqueuedSequence(hostipc::Shared* shared,HANDLE doneEvent,HANDLE hostProcess,LONG requestedSeq,DWORD timeoutMs) {
     const ULONGLONG deadline=GetTickCount64()+timeoutMs;
@@ -123,7 +147,8 @@ public:
         frameEvent_=CreateEventW(nullptr,FALSE,FALSE,names_.frameEvent.c_str());
         stopEvent_=CreateEventW(nullptr,TRUE,FALSE,names_.stopEvent.c_str());
         doneEvent_=CreateEventW(nullptr,FALSE,FALSE,names_.doneEvent.c_str());
-        if(!frameEvent_ || !stopEvent_ || !doneEvent_) { setFailure(st,PipelineStage::HostLaunchFailed,(int)GetLastError(),L"Could not create external NR host events");shutdown();return false; }
+        outputFenceEvent_=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        if(!frameEvent_ || !stopEvent_ || !doneEvent_ || !outputFenceEvent_) { setFailure(st,PipelineStage::HostLaunchFailed,(int)GetLastError(),L"Could not create external NR host events");shutdown();return false; }
         if(FAILED(d11v5_->CreateFence(0,D3D11_FENCE_FLAG_SHARED,IID_PPV_ARGS(&fence11_)))) {
             setFailure(st,PipelineStage::HostResourceShareFailed,0,L"Could not create bridge/host shared GPU fence");shutdown();return false;
         }
@@ -163,6 +188,8 @@ public:
 
     bool evaluate(ID3D11DeviceContext*,const FrameResources& frame,const Settings& settings,RuntimeStatus& st) override {
         st.neuralApi=NeuralExecutionApi::D3D12;
+        st.framePacingMode=static_cast<std::uint32_t>(settings.framePacing);
+        st.neuralOutputAgeFrames=0;st.neuralOutputAgeMs=0.0f;st.pacingWaitMs=0.0f;
         st.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
         if(!initialized_ || !shared_) return false;
         mergeHostStatus(st);
@@ -192,25 +219,37 @@ public:
             lastPreset_=settings.nrPreset;width_=height_=0;forceResetNext_=true;
         }
 
-        // If a previous frame exceeded the short CPU enqueue budget, do not
-        // overwrite its shared textures. Let NRHost finish in the background
-        // while the game uses its local passthrough path. This caps Present-side
-        // hitching and also prevents late Done events from desynchronizing frames.
+        // Never overwrite shared textures while an older exact-sequence request
+        // is still using them. In Synchronized mode, however, actively drain that
+        // request instead of turning every subsequent Present into passthrough.
+        // This matters when the foreground game temporarily receives more WDDM
+        // scheduling time than the separate NRHost process.
         if(pendingSeq_!=0) {
             if(hostProcess_ && WaitForSingleObject(hostProcess_,0)==WAIT_OBJECT_0) {
                 setFailure(st,PipelineStage::HostRuntimeFailed,0,L"External NR host exited while a neural frame was outstanding");
                 return false;
             }
-            const LONG published=InterlockedCompareExchange(&shared_->enqueuedSeq,0,0);
-            const UINT64 gpuCompleted=fence11_?fence11_->GetCompletedValue():0;
-            const ULONGLONG age=GetTickCount64()-pendingSince_;
-            if(!nrHostSequenceEnqueued(published,pendingSeq_) || gpuCompleted<pendingOutputValue_) {
+            LONG completed=InterlockedCompareExchange(&shared_->completedSeq,0,0);
+            UINT64 gpuCompleted=fence11_?fence11_->GetCompletedValue():0;
+            ULONGLONG age=GetTickCount64()-pendingSince_;
+            bool pendingReady=nrHostOutputReady(completed,pendingSeq_,gpuCompleted,pendingOutputValue_);
+            if(!pendingReady && settings.framePacing==FramePacingMode::Synchronized){
+                const auto drainStart=GetTickCount64();
+                const auto drain=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,pendingSeq_,pendingOutputValue_,nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized));
+                st.pacingWaitMs=static_cast<float>(GetTickCount64()-drainStart);
+                pendingReady=drain==OutputWaitResult::Ready;
+                if(!pendingReady && drain==OutputWaitResult::HostExited){setFailure(st,PipelineStage::HostRuntimeFailed,0,L"External NR host exited while draining the outstanding neural frame");return false;}
+                if(!pendingReady && drain==OutputWaitResult::WaitFailed){setFailure(st,PipelineStage::HostRuntimeFailed,(int)GetLastError(),L"Waiting for the outstanding NRHost frame failed");return false;}
+                age=GetTickCount64()-pendingSince_;
+            }
+            if(!pendingReady) {
+                st.pacingWaitMs=std::max(st.pacingWaitMs,static_cast<float>(age));
                 if(age>kPendingWatchdogMs) {
                     setFailure(st,PipelineStage::HostRuntimeFailed,WAIT_TIMEOUT,L"External NR host did not retire the outstanding neural frame within 2 seconds");
                 } else {
                     if(st.failureStage==PipelineStage::HostRuntimeFailed) st.failureStage=PipelineStage::None;
                     st.neuralActive=0;
-                    wcscpy_s(st.message,L"NRHost warm-up/busy: using passthrough while the outstanding neural frame finishes");
+                    wchar_t busy[256]{};swprintf_s(busy,L"NRHost busy: outstanding frame age=%llums; passthrough until exact GPU completion",age);wcsncpy_s(st.message,busy,_TRUNCATE);
                 }
                 return false;
             }
@@ -247,12 +286,19 @@ public:
         const LONG seq=InterlockedIncrement(&shared_->frameSeq);
         SetEvent(frameEvent_);
 
-        const auto dispatch=waitForEnqueuedSequence(shared_,doneEvent_,hostProcess_,seq,kEnqueueBudgetMs);
+        // Treat enqueue + exact-output completion as one pacing operation. The
+        // old hard 12 ms enqueue timeout fired before Synchronized mode's total
+        // current-frame budget and produced a visible NR/passthrough alternation
+        // on games such as Cyberpunk even when the result arrived shortly after.
+        const auto pacingWaitStart=GetTickCount64();
+        const auto frameWaitBudget=nrHostOutputWaitBudgetMs(settings.framePacing);
+        const auto dispatch=waitForEnqueuedSequence(shared_,doneEvent_,hostProcess_,seq,frameWaitBudget);
         if(dispatch==EnqueueWaitResult::Timeout) {
             pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=GetTickCount64();forceResetNext_=settings.resetOnTemporalGap;
             if(st.failureStage==PipelineStage::HostRuntimeFailed) st.failureStage=PipelineStage::None;
+            st.pacingWaitMs=static_cast<float>(GetTickCount64()-pacingWaitStart);
             st.neuralActive=0;
-            wcscpy_s(st.message,L"NRHost warm-up/busy: enqueue exceeded 12 ms; using passthrough until the host catches up");
+            wcscpy_s(st.message,L"NRHost warm-up/busy: enqueue exceeded the frame-pacing budget; current frame passed through");
             return false;
         }
         if(dispatch!=EnqueueWaitResult::Ready) {
@@ -267,18 +313,33 @@ public:
             return false;
         }
 
-        if(FAILED(ctx11v4_->Wait(fence11_.Get(),outputValue))) {
-            setFailure(st,PipelineStage::HostRuntimeFailed,0,L"D3D11 GPU wait for external NR host failed");return false;
+        const auto elapsedBeforeOutput=GetTickCount64()-pacingWaitStart;
+        const auto remainingBudget=nrHostRemainingWaitBudgetMs(settings.framePacing,elapsedBeforeOutput);
+        const auto outputWait=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,seq,outputValue,remainingBudget);
+        st.pacingWaitMs=static_cast<float>(GetTickCount64()-pacingWaitStart);
+        if(outputWait!=OutputWaitResult::Ready){
+            pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=GetTickCount64();forceResetNext_=settings.resetOnTemporalGap;
+            st.neuralActive=0;
+            if(outputWait==OutputWaitResult::HostExited)setFailure(st,PipelineStage::HostRuntimeFailed,0,L"External NR host exited before the requested frame completed");
+            else if(outputWait==OutputWaitResult::WaitFailed)setFailure(st,PipelineStage::HostRuntimeFailed,(int)GetLastError(),L"Waiting for the exact NRHost output fence failed");
+            else if(outputWait==OutputWaitResult::HostError){mergeHostStatus(st);if(st.failureStage==PipelineStage::None)setFailure(st,PipelineStage::HostRuntimeFailed,shared_->lastResult,L"External NR host entered an error state before output completion");}
+            else if(outputWait==OutputWaitResult::SequenceMismatch)setFailure(st,PipelineStage::HostRuntimeFailed,0,L"NRHost completed a different frame sequence; stale output rejected");
+            else {if(st.failureStage==PipelineStage::HostRuntimeFailed)st.failureStage=PipelineStage::None;wcscpy_s(st.message,L"NRHost output missed the frame budget; stale result discarded and current frame passed through");}
+            return false;
         }
+        // The shared fence now proves that output_ contains this exact request.
+        // No queued cross-API wait is needed, and a late/older result can never
+        // enter the current-frame post composite.
         ctx11_->CopyResource(frame.output,output_.Get());
         mergeHostStatus(st);
         if(st.failureStage==PipelineStage::HostRuntimeFailed && shared_->failureStage==(UINT)PipelineStage::None)
             st.failureStage=PipelineStage::None;
-        const LONG published=InterlockedCompareExchange(&shared_->enqueuedSeq,0,0);
-        st.neuralActive=(nrHostSequenceEnqueued(published,seq) && shared_->lastResult==1 && static_cast<hostipc::Route>(shared_->route)!=hostipc::Route::None)?1u:0u;
+        const LONG completed=InterlockedCompareExchange(&shared_->completedSeq,0,0);
+        const UINT64 gpuCompleted=fence11_->GetCompletedValue();
+        st.neuralActive=(nrHostOutputReady(completed,seq,gpuCompleted,outputValue) && shared_->lastResult==1 && static_cast<hostipc::Route>(shared_->route)!=hostipc::Route::None)?1u:0u;
         if(st.neuralActive) ++st.externalHostFrames;
         if(st.neuralActive) forceResetNext_=false;
-        return true; // frame is GPU-queued; host guarantees passthrough output even if NR evaluation fails
+        return st.neuralActive!=0;
     }
 
     void reset() override { forceResetNext_=true; }
@@ -348,14 +409,14 @@ private:
         if(frameEvent_) { CloseHandle(frameEvent_);frameEvent_=nullptr; }
         if(stopEvent_) { CloseHandle(stopEvent_);stopEvent_=nullptr; }
         if(doneEvent_) { CloseHandle(doneEvent_);doneEvent_=nullptr; }
+        if(outputFenceEvent_) { CloseHandle(outputFenceEvent_);outputFenceEvent_=nullptr; }
         fence11_.Reset();d11v5_.Reset();ctx11v4_.Reset();color_.Reset();output_.Reset();motion_.Reset();depth_.Reset();control_.Reset();ctx11_.Reset();d11_.Reset();
         initialized_=false;width_=height_=0;resourceGeneration_=0;fenceValue_=0;hostPid_=0;pendingSeq_=0;pendingOutputValue_=0;pendingSince_=0;lastPreset_=~0u;runtime_.clear();
     }
 
     ComPtr<ID3D11Device> d11_;ComPtr<ID3D11DeviceContext> ctx11_;ComPtr<ID3D11Device5> d11v5_;ComPtr<ID3D11DeviceContext4> ctx11v4_;ComPtr<ID3D11Fence> fence11_;
     ComPtr<ID3D11Texture2D> color_,output_,motion_,depth_,control_;
-    hostipc::Shared* shared_{};HANDLE mapping_{},frameEvent_{},stopEvent_{},doneEvent_{},hostProcess_{},hostThread_{};
-    static constexpr DWORD kEnqueueBudgetMs=12;
+    hostipc::Shared* shared_{};HANDLE mapping_{},frameEvent_{},stopEvent_{},doneEvent_{},outputFenceEvent_{},hostProcess_{},hostThread_{};
     static constexpr ULONGLONG kPendingWatchdogMs=2000;
     NrHostSessionNames names_{};LUID adapterLuid_{};std::wstring runtime_;UINT width_{},height_{};std::uint32_t resourceGeneration_{};std::uint64_t fenceValue_{};DWORD hostPid_{};bool initialized_{};
     LONG pendingSeq_{};UINT64 pendingOutputValue_{};ULONGLONG pendingSince_{};bool forceResetNext_{true};std::uint32_t lastPreset_{~0u};

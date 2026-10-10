@@ -23,6 +23,11 @@ inline constexpr std::uint32_t guideSourcePriority(GameGuideSource source) {
     }
 }
 
+inline constexpr bool shouldConsumeGuideGeneration(std::uint64_t currentGeneration,
+                                                   std::uint64_t consumedGeneration) {
+    return consumedGeneration!=0 && currentGeneration==consumedGeneration;
+}
+
 inline constexpr bool guideCaptureFresh(std::uint64_t capturedTickMs,
                                         std::uint64_t nowTickMs,
                                         std::uint64_t maxAgeMs=750) {

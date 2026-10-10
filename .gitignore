@@ -12,3 +12,15 @@
 *.onnx
 __pycache__/
 *.pyc
+
+# Local-only neural-model research; never publish from a public clone
+research/ngxnr/
+MODEL_LAB_R11.bat
+FIX_NOTES_R11.md
+tests/r11_model_lab_wiring_tests.cpp
+*.bin
+*.safetensors
+*.pt
+*.pth
+model_lab_report.json
+tensor_candidate_manifest.json

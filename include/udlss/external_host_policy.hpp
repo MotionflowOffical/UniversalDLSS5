@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include "settings.hpp"
 
 namespace udlss {
 
@@ -24,6 +25,32 @@ inline NrHostSessionNames makeNrHostSessionNames(std::uint32_t pid, std::uint32_
 
 inline bool nrHostSequenceEnqueued(std::int32_t publishedSeq, std::int32_t requestedSeq) {
     return publishedSeq >= requestedSeq;
+}
+
+inline bool nrHostOutputReady(std::int32_t completedSeq, std::int32_t requestedSeq,
+                              std::uint64_t gpuCompletedValue, std::uint64_t requestedOutputValue) {
+    return completedSeq == requestedSeq && requestedOutputValue != 0 && gpuCompletedValue >= requestedOutputValue;
+}
+
+// This is the TOTAL bridge-side latency budget for a frame, including the
+// host's CPU command recording/enqueue phase and the exact GPU-output wait.
+// Previously the bridge imposed an unrelated fixed 12 ms enqueue timeout before
+// this budget, which caused synchronized mode to alternate NR/passthrough.
+// A separate NRHost process can also be temporarily deprioritized by WDDM when
+// the game becomes the foreground GPU-heavy process. Synchronized mode is the
+// quality/continuity mode, so give the exact current-frame result enough time
+// to survive that scheduling shift instead of silently dropping into passthrough.
+inline constexpr std::uint32_t nrHostOutputWaitBudgetMs(FramePacingMode mode) {
+    switch(mode) {
+    case FramePacingMode::Synchronized: return 250;
+    case FramePacingMode::Adaptive: return 16;
+    case FramePacingMode::Asynchronous: default: return 0;
+    }
+}
+
+inline constexpr std::uint32_t nrHostRemainingWaitBudgetMs(FramePacingMode mode,std::uint64_t elapsedMs) {
+    const auto total=nrHostOutputWaitBudgetMs(mode);
+    return elapsedMs>=total?0u:static_cast<std::uint32_t>(total-elapsedMs);
 }
 
 } // namespace udlss

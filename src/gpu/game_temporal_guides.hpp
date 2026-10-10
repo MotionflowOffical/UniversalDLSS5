@@ -30,16 +30,28 @@ struct CapturedGameGuides {
     bool cameraCut{};
     bool validUntilPresent{};
     bool snapshotOwned{};
+    bool depthSnapshotOwned{};
+    bool motionSnapshotOwned{};
     std::uint32_t confidence{};
     GameGuideSource source{GameGuideSource::None};
     std::wstring provider;
     std::uint64_t capturedTickMs{};
+    std::uint64_t captureSequence{};
+    std::uintptr_t providerCommandListId{};
+    std::uintptr_t producerQueueId{};
+    std::uint32_t providerViewportId{};
 
     explicit operator bool() const { return depth11||motion11||depth12||motion12; }
 };
 
 bool installGameTemporalGuideHooks();
+std::wstring gameTemporalGuideHookDiagnostics();
 void releaseCapturedGameTemporalGuides();
+void consumeCapturedGameTemporalGuides(std::uint64_t captureSequence);
+using D3D12ExecuteCommandListsFn = void (STDMETHODCALLTYPE*)(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*);
+bool pendingGameTemporalGuideSnapshotActive();
+bool snapshotPendingGameTemporalGuidesAfterExecute(ID3D12CommandQueue* queue,ID3D12CommandList* commandList,D3D12ExecuteCommandListsFn originalExecute);
+void noteGameTemporalGuideCommandListExecuted(ID3D12CommandList* commandList,std::uintptr_t queueId);
 void resetGameTemporalGuides();
 CapturedGameGuides snapshotGameTemporalGuides(ID3D11Device* device,std::uint64_t nowMs);
 CapturedGameGuides snapshotGameTemporalGuides(ID3D12Device* device,std::uint64_t nowMs);
