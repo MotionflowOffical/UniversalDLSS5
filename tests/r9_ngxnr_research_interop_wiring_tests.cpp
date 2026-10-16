@@ -13,10 +13,12 @@ int main() {
     const auto root=std::filesystem::path(UDLSS_SOURCE_DIR);
     const auto src=read(root/"src/gpu/d3d12_on12.cpp");
     const auto hdr=read(root/"src/gpu/d3d12_on12.hpp");
+    const auto flags=read(root/"src/gpu/shared_guide_texture.hpp");
     bool ok=true;
     auto need=[&](const std::string&s,const char*token){if(s.find(token)==std::string::npos){std::cerr<<token<<" missing\n";ok=false;}};
     need(src,"for(unsigned candidate=0;candidate<4");
-    need(src,"D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS");
+    need(src,"sharedGuideTextureFlags(format,candidate%2!=0)");
+    need(flags,"D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS");
     need(src,"OpenSharedResource1(shared");
     need(src,"surface.failureOperation=3");
     need(src,"surface.candidateAttempts");

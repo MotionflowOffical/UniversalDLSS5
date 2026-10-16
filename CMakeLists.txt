@@ -20,6 +20,12 @@ target_include_directories(udlss_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/in
 
 if(UDLSS_BUILD_TESTS)
   enable_testing()
+  if(WIN32)
+    add_executable(d3d12_guide_interop_tests tests/d3d12_guide_interop_tests.cpp)
+    target_link_libraries(d3d12_guide_interop_tests PRIVATE d3d12 d3d11 dxgi)
+    add_test(NAME d3d12_guide_interop_tests COMMAND d3d12_guide_interop_tests)
+    set_tests_properties(d3d12_guide_interop_tests PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   add_executable(ngxnr_guide_contract_tests tests/ngxnr_guide_contract_tests.cpp)
   target_link_libraries(ngxnr_guide_contract_tests PRIVATE udlss_common)
   add_test(NAME ngxnr_guide_contract_tests COMMAND ngxnr_guide_contract_tests)

@@ -24,7 +24,7 @@ int main(){
  ok&=need(guides,"kBufferTypeScalingInputColor","render-input extent is not captured for DLSS motion-vector scale");
  ok&=need(guides,"providerViewportId","provider generations are not viewport-isolated");
  ok&=need(guides,"providerSnapshotResourceFormat","owned provider snapshots are not normalized for D3D11 sharing");
- ok&=need(guides,"preferred.Flags=D3D12_RESOURCE_FLAG_NONE","normalized snapshots retain engine-only depth/UAV flags");
+ ok&=need(guides,"preferred.Flags=sharedGuideTextureFlags(normalizedFormat)","normalized snapshots do not use D3D11-shareable guide flags");
  ok&=need(extractor,"explicitProvider?providerGuideExtentCompatible","provider depth is still re-rejected by the heuristic 45% extent gate");
  ok&=need(host,"DLSSNR.ColorSubrectBaseX","external host still omits Feature-18 color subrect base parameters");
  ok&=need(host,"DLSSNR.OutputSubrectBaseX","external host still omits Feature-18 output subrect base parameters");

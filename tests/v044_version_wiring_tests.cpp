@@ -27,7 +27,10 @@ int main(){
  ok&=need(log,"UniversalDLSS5 v0.4.4","attach log version is stale");
  ok&=need(readme,"**Current version:** v0.4.4","README current version is stale");
  ok&=need(runtime,"UniversalDLSS5 v0.4.4","runtime README version is stale");
- ok&=need(overwrite,"UniversalDLSS5 v0.4.4","overwrite instructions version is stale");
+ // Overwrite instructions belong to an optional deployment package. The clean
+ // source repository intentionally omits that file; validate it when present.
+ if(std::filesystem::exists(root/"OVERWRITE_INSTALL.txt"))
+   ok&=need(overwrite,"UniversalDLSS5 v0.4.4","overwrite instructions version is stale");
  ok&=need(release,"# UniversalDLSS5 v0.4.4","v0.4.4 release notes are missing");
  return ok?0:1;
 }

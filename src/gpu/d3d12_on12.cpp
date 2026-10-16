@@ -1,4 +1,5 @@
 #include "d3d12_on12.hpp"
+#include "shared_guide_texture.hpp"
 #include "d3d12_resource_tracker.hpp"
 #include "game_temporal_guides.hpp"
 #include "../bridge/attach_logger.hpp"
@@ -287,7 +288,7 @@ bool D3D12On12Pipeline::stageRecoveryGuide(ID3D12Resource* source,D3D12_RESOURCE
             const DXGI_FORMAT format=options[candidate/2];
             if(format==DXGI_FORMAT_UNKNOWN)continue;
             D3D12_RESOURCE_DESC d=src;d.Format=format;
-            d.Flags=(candidate%2)?D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS:D3D12_RESOURCE_FLAG_NONE;
+            d.Flags=sharedGuideTextureFlags(format,candidate%2!=0);
             d.MipLevels=1;d.SampleDesc.Count=1;d.SampleDesc.Quality=0;
             // Do not carry an engine-specific GPU layout into an NT-shared
             // texture; a standard UNKNOWN layout is required here.

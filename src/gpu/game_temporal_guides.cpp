@@ -1,4 +1,5 @@
 #include "game_temporal_guides.hpp"
+#include "shared_guide_texture.hpp"
 #include "udlss/provider_snapshot_policy.hpp"
 #include "../bridge/hook_lifecycle.hpp"
 #include <MinHook.h>
@@ -678,7 +679,7 @@ bool ensurePostSubmitResource(ID3D12Device* device,const D3D12_RESOURCE_DESC& so
     if(!device||!snapshotDescSupported(sourceDesc))return false;
     D3D12_RESOURCE_DESC preferred=sourceDesc;
     const auto normalizedFormat=providerSnapshotResourceFormat(viewFormat!=DXGI_FORMAT_UNKNOWN?viewFormat:sourceDesc.Format,depth);
-    if(normalizedFormat!=DXGI_FORMAT_UNKNOWN){preferred.Format=normalizedFormat;preferred.Flags=D3D12_RESOURCE_FLAG_NONE;}
+    if(normalizedFormat!=DXGI_FORMAT_UNKNOWN){preferred.Format=normalizedFormat;preferred.Flags=sharedGuideTextureFlags(normalizedFormat);preferred.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;}
     if(resource&&sameSnapshotDesc(current,preferred))return true;
     resource.Reset();current={};
     D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CreationNodeMask=1;heap.VisibleNodeMask=1;
