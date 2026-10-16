@@ -1,5 +1,6 @@
 #include "backend.hpp"
 #include "external_host_protocol.hpp"
+#include "external_host_wait.hpp"
 #include "udlss/external_host_policy.hpp"
 #include <windows.h>
 #include <d3d11_4.h>
@@ -56,31 +57,6 @@ bool duplicateIntoProcess(HANDLE source,HANDLE targetProcess,std::uint64_t& wire
 }
 
 enum class EnqueueWaitResult { Ready, Timeout, HostExited, HostError, WaitFailed };
-enum class OutputWaitResult { Ready, Timeout, HostExited, HostError, WaitFailed, SequenceMismatch };
-
-OutputWaitResult waitForExactOutput(hostipc::Shared* shared,ID3D11Fence* fence,HANDLE fenceEvent,HANDLE hostProcess,LONG requestedSeq,UINT64 outputValue,DWORD timeoutMs) {
-    if(!shared||!fence||!fenceEvent||!outputValue)return OutputWaitResult::WaitFailed;
-    auto exactReady=[&](){
-        const LONG completed=InterlockedCompareExchange(&shared->completedSeq,0,0);
-        return nrHostOutputReady(completed,requestedSeq,fence->GetCompletedValue(),outputValue);
-    };
-    if(exactReady())return OutputWaitResult::Ready;
-    if(timeoutMs==0)return OutputWaitResult::Timeout;
-    if(hostProcess&&WaitForSingleObject(hostProcess,0)==WAIT_OBJECT_0)return OutputWaitResult::HostExited;
-    const auto state=static_cast<hostipc::State>(InterlockedCompareExchange(&shared->state,0,0));
-    if(state==hostipc::State::Error||state==hostipc::State::Stopping)return OutputWaitResult::HostError;
-    if(FAILED(fence->SetEventOnCompletion(outputValue,fenceEvent)))return OutputWaitResult::WaitFailed;
-    HANDLE waits[]={fenceEvent,hostProcess};
-    const DWORD count=hostProcess?2u:1u;
-    const DWORD w=WaitForMultipleObjects(count,waits,FALSE,timeoutMs);
-    if(w==WAIT_TIMEOUT)return OutputWaitResult::Timeout;
-    if(w==WAIT_FAILED)return OutputWaitResult::WaitFailed;
-    if(hostProcess&&w==WAIT_OBJECT_0+1)return OutputWaitResult::HostExited;
-    const LONG completed=InterlockedCompareExchange(&shared->completedSeq,0,0);
-    if(nrHostOutputReady(completed,requestedSeq,fence->GetCompletedValue(),outputValue))return OutputWaitResult::Ready;
-    return completed==requestedSeq?OutputWaitResult::Timeout:OutputWaitResult::SequenceMismatch;
-}
-
 EnqueueWaitResult waitForEnqueuedSequence(hostipc::Shared* shared,HANDLE doneEvent,HANDLE hostProcess,LONG requestedSeq,DWORD timeoutMs) {
     const ULONGLONG deadline=GetTickCount64()+timeoutMs;
     for(;;) {
@@ -192,6 +168,7 @@ public:
         st.neuralOutputAgeFrames=0;st.neuralOutputAgeMs=0.0f;st.pacingWaitMs=0.0f;
         st.neuralPassesRequested=std::clamp<std::uint32_t>(settings.nrPasses,1,4);
         if(!initialized_ || !shared_) return false;
+        const auto evaluationStart=GetTickCount64();
         mergeHostStatus(st);
         shared_->frameReset=(frame.resetHistory||forceResetNext_)?1u:0u;
         shared_->depthInverted=frame.depthInverted?1u:0u;
@@ -235,7 +212,8 @@ public:
             bool pendingReady=nrHostOutputReady(completed,pendingSeq_,gpuCompleted,pendingOutputValue_);
             if(!pendingReady && settings.framePacing==FramePacingMode::Synchronized){
                 const auto drainStart=GetTickCount64();
-                const auto drain=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,pendingSeq_,pendingOutputValue_,nrHostOutputWaitBudgetMs(FramePacingMode::Synchronized));
+                const auto drainBudget=std::min(nrHostPendingWaitBudgetMs(settings.framePacing,age),nrHostRemainingWaitBudgetMs(settings.framePacing,GetTickCount64()-evaluationStart));
+                const auto drain=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,pendingSeq_,pendingOutputValue_,drainBudget,doneEvent_);
                 st.pacingWaitMs=static_cast<float>(GetTickCount64()-drainStart);
                 pendingReady=drain==OutputWaitResult::Ready;
                 if(!pendingReady && drain==OutputWaitResult::HostExited){setFailure(st,PipelineStage::HostRuntimeFailed,0,L"External NR host exited while draining the outstanding neural frame");return false;}
@@ -243,13 +221,12 @@ public:
                 age=GetTickCount64()-pendingSince_;
             }
             if(!pendingReady) {
-                st.pacingWaitMs=std::max(st.pacingWaitMs,static_cast<float>(age));
-                if(age>kPendingWatchdogMs) {
+                if(age>=kPendingWatchdogMs) {
                     setFailure(st,PipelineStage::HostRuntimeFailed,WAIT_TIMEOUT,L"External NR host did not retire the outstanding neural frame within 2 seconds");
                 } else {
                     if(st.failureStage==PipelineStage::HostRuntimeFailed) st.failureStage=PipelineStage::None;
                     st.neuralActive=0;
-                    wchar_t busy[256]{};swprintf_s(busy,L"NRHost busy: outstanding frame age=%llums; passthrough until exact GPU completion",age);wcsncpy_s(st.message,busy,_TRUNCATE);
+                    wchar_t busy[384]{};swprintf_s(busy,L"NRHost busy: age=%llums seq=%ld done=%ld enq=%ld GPU=%llu need=%llu; host: %ls",age,pendingSeq_,completed,shared_->enqueuedSeq,gpuCompleted,pendingOutputValue_,shared_->message);wcsncpy_s(st.message,busy,_TRUNCATE);
                 }
                 return false;
             }
@@ -291,12 +268,12 @@ public:
         // current-frame budget and produced a visible NR/passthrough alternation
         // on games such as Cyberpunk even when the result arrived shortly after.
         const auto pacingWaitStart=GetTickCount64();
-        const auto frameWaitBudget=nrHostOutputWaitBudgetMs(settings.framePacing);
+        const auto frameWaitBudget=nrHostRemainingWaitBudgetMs(settings.framePacing,GetTickCount64()-evaluationStart);
         const auto dispatch=waitForEnqueuedSequence(shared_,doneEvent_,hostProcess_,seq,frameWaitBudget);
         if(dispatch==EnqueueWaitResult::Timeout) {
-            pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=GetTickCount64();forceResetNext_=settings.resetOnTemporalGap;
+            pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=pacingWaitStart;forceResetNext_=settings.resetOnTemporalGap;
             if(st.failureStage==PipelineStage::HostRuntimeFailed) st.failureStage=PipelineStage::None;
-            st.pacingWaitMs=static_cast<float>(GetTickCount64()-pacingWaitStart);
+            st.pacingWaitMs+=static_cast<float>(GetTickCount64()-pacingWaitStart);
             st.neuralActive=0;
             wcscpy_s(st.message,L"NRHost warm-up/busy: enqueue exceeded the frame-pacing budget; current frame passed through");
             return false;
@@ -313,18 +290,18 @@ public:
             return false;
         }
 
-        const auto elapsedBeforeOutput=GetTickCount64()-pacingWaitStart;
+        const auto elapsedBeforeOutput=GetTickCount64()-evaluationStart;
         const auto remainingBudget=nrHostRemainingWaitBudgetMs(settings.framePacing,elapsedBeforeOutput);
-        const auto outputWait=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,seq,outputValue,remainingBudget);
-        st.pacingWaitMs=static_cast<float>(GetTickCount64()-pacingWaitStart);
+        const auto outputWait=waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,seq,outputValue,remainingBudget,doneEvent_);
+        st.pacingWaitMs+=static_cast<float>(GetTickCount64()-pacingWaitStart);
         if(outputWait!=OutputWaitResult::Ready){
-            pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=GetTickCount64();forceResetNext_=settings.resetOnTemporalGap;
+            pendingSeq_=seq;pendingOutputValue_=outputValue;pendingSince_=pacingWaitStart;forceResetNext_=settings.resetOnTemporalGap;
             st.neuralActive=0;
             if(outputWait==OutputWaitResult::HostExited)setFailure(st,PipelineStage::HostRuntimeFailed,0,L"External NR host exited before the requested frame completed");
             else if(outputWait==OutputWaitResult::WaitFailed)setFailure(st,PipelineStage::HostRuntimeFailed,(int)GetLastError(),L"Waiting for the exact NRHost output fence failed");
             else if(outputWait==OutputWaitResult::HostError){mergeHostStatus(st);if(st.failureStage==PipelineStage::None)setFailure(st,PipelineStage::HostRuntimeFailed,shared_->lastResult,L"External NR host entered an error state before output completion");}
             else if(outputWait==OutputWaitResult::SequenceMismatch)setFailure(st,PipelineStage::HostRuntimeFailed,0,L"NRHost completed a different frame sequence; stale output rejected");
-            else {if(st.failureStage==PipelineStage::HostRuntimeFailed)st.failureStage=PipelineStage::None;wcscpy_s(st.message,L"NRHost output missed the frame budget; stale result discarded and current frame passed through");}
+            else {if(st.failureStage==PipelineStage::HostRuntimeFailed)st.failureStage=PipelineStage::None;swprintf_s(st.message,L"NRHost budget missed: seq=%ld done=%ld enq=%ld GPU=%llu in=%llu need=%llu; host: %ls",seq,shared_->completedSeq,shared_->enqueuedSeq,fence11_->GetCompletedValue(),inputValue,outputValue,shared_->message);}
             return false;
         }
         // The shared fence now proves that output_ contains this exact request.
@@ -348,6 +325,7 @@ public:
 private:
     void mergeHostStatus(RuntimeStatus& st) {
         if(!shared_) return;
+        st.lastGpuMs=shared_->lastGpuMs;
         st.stageMask|=shared_->stageMask;
         const auto hostFailure=static_cast<PipelineStage>(shared_->failureStage);
         if(hostFailure!=PipelineStage::None) st.failureStage=hostFailure;
@@ -417,7 +395,7 @@ private:
     ComPtr<ID3D11Device> d11_;ComPtr<ID3D11DeviceContext> ctx11_;ComPtr<ID3D11Device5> d11v5_;ComPtr<ID3D11DeviceContext4> ctx11v4_;ComPtr<ID3D11Fence> fence11_;
     ComPtr<ID3D11Texture2D> color_,output_,motion_,depth_,control_;
     hostipc::Shared* shared_{};HANDLE mapping_{},frameEvent_{},stopEvent_{},doneEvent_{},outputFenceEvent_{},hostProcess_{},hostThread_{};
-    static constexpr ULONGLONG kPendingWatchdogMs=2000;
+    static constexpr ULONGLONG kPendingWatchdogMs=kNrHostWatchdogMs;
     NrHostSessionNames names_{};LUID adapterLuid_{};std::wstring runtime_;UINT width_{},height_{};std::uint32_t resourceGeneration_{};std::uint64_t fenceValue_{};DWORD hostPid_{};bool initialized_{};
     LONG pendingSeq_{};UINT64 pendingOutputValue_{};ULONGLONG pendingSince_{};bool forceResetNext_{true};std::uint32_t lastPreset_{~0u};
 };

@@ -14,7 +14,7 @@ int main(){
  const auto bridge=read(root/"src/neural/external_host.cpp");
  const auto host=read(root/"src/host/main.cpp");
  bool ok=true;
- ok&=need(proto,"kAbi=6","external-host IPC ABI was not bumped for multipass fields");
+ ok&=need(proto,"kAbi=7","external-host IPC ABI was not bumped for multipass and GPU timing fields");
  ok&=need(proto,"nrPassesRequested","external-host protocol does not carry requested NR pass count");
  ok&=need(proto,"nrPassesExecuted","external-host protocol does not publish executed NR pass count");
  ok&=need(bridge,"shared_->nrPassesRequested","bridge does not send the selected NR pass count to NRHost");

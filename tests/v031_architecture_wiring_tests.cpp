@@ -13,15 +13,15 @@ int main(){
  const std::filesystem::path r=UDLSS_SOURCE_DIR;
  const auto cm=read(r/"CMakeLists.txt"), bridge=read(r/"src/bridge/dxgi_hooks.cpp"), tracker=read(r/"src/gpu/d3d12_resource_tracker.cpp"), trackerH=read(r/"src/gpu/d3d12_resource_tracker.hpp"), on12=read(r/"src/gpu/d3d12_on12.cpp"), ui=read(r/"src/controller/ui.cpp"), rc=read(r/"resources/UniversalDLSS5.rc"), bw=read(r/"BUILD_WINDOWS.bat"), br=read(r/"BUILD_RELEASE.bat"), host=read(r/"src/host/main.cpp"), ngx=read(r/"src/neural/ngx_nr.cpp"), sl=read(r/"src/neural/streamline_nr.cpp"), logh=read(r/"src/bridge/attach_logger.hpp"), logc=read(r/"src/bridge/attach_logger.cpp");
  bool ok=true;
- ok&=need(cm,"project(UniversalDLSS5 VERSION 0.4.4","CMake version is not v0.4.4");
- ok&=need(bw,"UniversalDLSS5 v0.4.4","Windows build banner is stale");
- ok&=need(br,"UniversalDLSS5 v0.4.4","release build banner is stale");
- ok&=need(ui,"v0.4.4","controller UI version is stale");
- ok&=need(rc,"FILEVERSION 0,4,4,0","Windows file version is stale");
- ok&=need(rc,"\"0.4.4.0\\0\"","Windows string version is stale");
- ok&=need(host,"0.4.4","NRHost engine version is stale");
- ok&=need(ngx,"0.4.4","NGX engine version is stale");
- ok&=need(sl,"UniversalDLSS5-0.4.4","Streamline engine version is stale");
+ ok&=need(cm,"project(UniversalDLSS5 VERSION 0.5.0","CMake version is not v0.5.0");
+ ok&=need(bw,"UniversalDLSS5 v0.5.0","Windows build banner is stale");
+ ok&=need(br,"UniversalDLSS5 v0.5.0","release build banner is stale");
+ ok&=need(ui,"v0.5.0","controller UI version is stale");
+ ok&=need(rc,"FILEVERSION 0,5,0,0","Windows file version is stale");
+ ok&=need(rc,"\"0.5.0.0\\0\"","Windows string version is stale");
+ ok&=need(host,"0.5.0","NRHost engine version is stale");
+ ok&=need(ngx,"0.5.0","NGX engine version is stale");
+ ok&=need(sl,"UniversalDLSS5-0.5.0","Streamline engine version is stale");
 
  ok&=need(trackerH,"takeD3D12CommandListTouches","D3D12 tracker lacks command-list touch extraction");
  ok&=need(tracker,"commandListTouches","D3D12 tracker does not record command-list resource touches");

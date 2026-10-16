@@ -4,7 +4,7 @@
 
 namespace udlss::neural::hostipc {
 constexpr std::uint32_t kMagic=0x48524E35u; // 5NRH
-constexpr std::uint32_t kAbi=6;
+constexpr std::uint32_t kAbi=7;
 enum class State : LONG { Booting=0, WaitingConfig=1, Configuring=2, Ready=3, Active=4, Error=5, Stopping=6 };
 enum class Route : LONG { None=0, CoreDispatch=1, SignedSnippet=2 };
 #pragma pack(push,8)
@@ -75,6 +75,7 @@ struct Shared {
     wchar_t depthName[160]{};
     wchar_t controlMaskName[160]{};
     wchar_t message[384]{};
+    float lastGpuMs{};
 };
 #pragma pack(pop)
 static_assert(sizeof(void*)==4 || sizeof(void*)==8);

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include "udlss/d3d12_route_policy.hpp"
 static std::string read(const std::filesystem::path&p){std::ifstream f(p,std::ios::binary);std::ostringstream s;s<<f.rdbuf();return s.str();}
 static bool need(const std::string&s,const std::string&n,const char*m){if(s.find(n)==std::string::npos){std::cerr<<m<<"\n";return false;}return true;}
 int main(){
@@ -18,6 +19,11 @@ int main(){
  ok&=need(h,"CompatFrame","canonical compatibility frame missing");
  ok&=need(dxgi,"RendererRoute::NativeD3D11","native D3D11 route missing");
  ok&=need(route,"RendererRoute::NativeD3D12","native D3D12 route missing from exact-queue classifier");
- ok&=need(route,"synchronizeBeforePresent=false","native D3D12 route unexpectedly inherits recovery synchronization");
+ udlss::PresentQueueProofState proof{};
+ udlss::observePresentQueueEvidence(proof,0x2000,1000,true);
+ const auto native=udlss::chooseD3D12Route(proof,{},1000);
+ if(!native.trusted||native.route!=udlss::RendererRoute::NativeD3D12||native.synchronizeBeforePresent){
+     std::cerr<<"native D3D12 route unexpectedly inherits recovery synchronization\n";ok=false;
+ }
  return ok?0:1;
 }

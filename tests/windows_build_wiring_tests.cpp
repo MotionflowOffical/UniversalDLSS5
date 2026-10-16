@@ -23,8 +23,8 @@ int main() {
     const std::filesystem::path root = UDLSS_SOURCE_DIR;
     const auto cmake = readFile(root / "CMakeLists.txt");
     const auto buildScript = readFile(root / "BUILD_WINDOWS.bat");
-    if (cmake.find("project(UniversalDLSS5 VERSION 0.4.4") == std::string::npos ||
-        buildScript.find("UniversalDLSS5 v0.4.4") == std::string::npos ||
+    if (cmake.find("project(UniversalDLSS5 VERSION 0.5.0") == std::string::npos ||
+        buildScript.find("UniversalDLSS5 v0.5.0") == std::string::npos ||
         buildScript.find("-DUDLSS_WITH_STREAMLINE=ON") == std::string::npos) {
         std::cerr << "v0.2.8 Windows build does not enable the direct in-game Streamline mount/header path\n";
         return 1;
@@ -245,7 +245,7 @@ int main() {
         std::cerr << "External NR protocol does not carry control mask, reset, and verified NR tuning values\n";
         return 1;
     }
-    if (externalProtocol.find("kAbi=6") == std::string::npos ||
+    if (externalProtocol.find("kAbi=7") == std::string::npos ||
         externalProtocol.find("fenceHandle") == std::string::npos ||
         externalProtocol.find("colorHandle") == std::string::npos ||
         externalProtocol.find("outputHandle") == std::string::npos ||

@@ -230,7 +230,7 @@ bool process(IDXGISwapChain*s){
    if(!c.backbuffersRegistered)registerSwapchainBackbuffers(s);
    ComPtr<ID3D12CommandQueue> provenQueue;std::uintptr_t provenQueueId{};bool synchronizeRecoveryBeforePresent=false;bool recoveryMode=false;
    {
-    std::scoped_lock lock(mx);const auto route=chooseD3D12Route(c.queueProof,c.recovery,st.lastTickMs);
+    std::scoped_lock lock(mx);const auto route=chooseD3D12Route(c.queueProof,c.recovery,st.lastTickMs,set.backend==BackendMode::ExternalHostNR);
     if(route.trusted){provenQueue=c.q12;provenQueueId=route.queueId;st.rendererRoute=route.route;synchronizeRecoveryBeforePresent=route.synchronizeBeforePresent;recoveryMode=route.route==RendererRoute::ModernD3D12Recovery;}
     st.queueProofConfidence=route.confidence;c.safeAttach.queueCaptured=route.trusted&&provenQueue!=nullptr;
    }

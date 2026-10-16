@@ -16,7 +16,7 @@ static bool forbid(const std::string& s,const std::string& token,const char* why
 }
 int main(){
     const std::string root=UDLSS_SOURCE_DIR;
-    const auto host=readFile(root+"/src/neural/external_host.cpp");
+    const auto host=readFile(root+"/src/neural/external_host.cpp")+readFile(root+"/src/neural/external_host_wait.hpp");
     const auto guides=readFile(root+"/src/gpu/game_temporal_guides.cpp");
     const auto dxgi=readFile(root+"/src/bridge/dxgi_hooks.cpp");
     bool ok=true;

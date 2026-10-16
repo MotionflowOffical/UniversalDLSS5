@@ -1,9 +1,17 @@
 #include "udlss/external_host_policy.hpp"
 #include "udlss/settings.hpp"
 #include <cassert>
+#include <iostream>
 
 int main() {
     using namespace udlss;
+    if(nrHostPendingWaitBudgetMs(FramePacingMode::Synchronized,1500)!=500||
+       nrHostPendingWaitBudgetMs(FramePacingMode::Synchronized,2000)!=0||
+       nrHostPendingWaitBudgetMs(FramePacingMode::Synchronized,5000)!=0||
+       nrHostPendingWaitBudgetMs(FramePacingMode::Adaptive,0)!=0||
+       nrHostRemainingWaitBudgetMs(FramePacingMode::Synchronized,1500)!=500){
+        std::cerr<<"Pending drain must share the request watchdog and frame budget\n";return 1;
+    }
     assert(defaultSettings().backend == BackendMode::InGameNR);
     const auto n = makeNrHostSessionNames(1234, 7);
     assert(n.map == L"Local\\UniversalDLSS5.NRHost.1234.7");

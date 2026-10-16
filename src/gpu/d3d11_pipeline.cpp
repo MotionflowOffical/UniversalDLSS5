@@ -492,7 +492,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     else if(forceResetNext_) wcscpy_s(st.temporalReason,L"Motion/backend continuity reset");
     else wcscpy_s(st.temporalReason,L"Continuous history");
     const bool neuralEval=backend_->evaluate(context_.Get(),fr,settings,st);
-    if(settings.backend==BackendMode::InGameNR&&!backendFallback_&&neuralEval)st.neuralActive=1u;else st.neuralActive=0u;
+    st.neuralActive=isNeuralEvaluation(settings.backend,backendFallback_,neuralEval)?1u:0u;
     if(!neuralEval){context_->CopyResource(nrOutput8_.Get(),nrInput8_.Get());if(settings.resetOnTemporalGap)forceResetNext_=true;}else forceResetNext_=false;
     {ID3D11ShaderResourceView*s[]={nrOutput8Srv_.Get(),currentSrv_.Get(),maskSrv_.Get(),motionSrv_.Get(),depthSrv_.Get()};ok&=runCompute(post_.Get(),s,5,postUav_.Get(),width_,height_);}
     const bool blitOk=blit(bb,st);ok&=blitOk;if(blitOk)markPipelineStage(st.stageMask,PipelineStage::OutputComposited);else if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::OutputCompositeFailed;

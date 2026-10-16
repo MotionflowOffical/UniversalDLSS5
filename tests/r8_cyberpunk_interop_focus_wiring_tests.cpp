@@ -32,6 +32,6 @@ int main(){
  ok&=need(host,"D3D12_COMMAND_QUEUE_PRIORITY_HIGH","NRHost does not request a high-priority GPU queue under foreground load");
  ok&=need(host,"ABOVE_NORMAL_PRIORITY_CLASS","NRHost process is not protected from foreground scheduling starvation");
  ok&=need(ext,"waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,pendingSeq_","Synchronized mode does not drain an outstanding exact neural frame");
- ok&=need(extPolicy,"FramePacingMode::Synchronized: return 250","Synchronized host budget is still too short for foreground GPU scheduling shifts");
+ ok&=need(extPolicy,"FramePacingMode::Synchronized: return 2000","Synchronized mode must retain its exact frame within the host watchdog");
  return ok?0:1;
 }

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "../neural/external_host_protocol.hpp"
+#include "../neural/d3d12_gpu_timer.hpp"
 #include "udlss/external_host_policy.hpp"
 #include "udlss/runtime_diagnostics.hpp"
 
@@ -28,7 +29,7 @@ using namespace udlss::neural::hostipc;
 
 namespace {
 constexpr const char* kHostProjectId="a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kHostEngineVersion="0.4.4";
+constexpr const char* kHostEngineVersion="0.5.0";
 constexpr NVSDK_NGX_Feature kFeature=NVSDK_NGX_Feature_Reserved18;
 constexpr unsigned long long kFallbackSnippetApplicationId=0x0876232Cull;
 constexpr const char* kWidth="DLSSNR.Width"; constexpr const char* kHeight="DLSSNR.Height";
@@ -107,6 +108,7 @@ std::filesystem::path executableDir(){wchar_t p[32768]{};const DWORD n=GetModule
 NVSDK_NGX_Result NVSDK_CONV ratioCallback(NVSDK_NGX_Parameter* p) noexcept { if(!p)return NVSDK_NGX_Result_FAIL_InvalidParameter; p->Set(kScalingRatio,1.0f);return NVSDK_NGX_Result_Success; }
 
 struct Host {
+    udlss::neural::D3D12GpuTimer gpuTimer;
     Shared* shared{};HANDLE mapping{},frameEvent{},stopEvent{},doneEvent{},bridgeProcess{};std::wstring session;
     ComPtr<IDXGIAdapter1> adapter;ComPtr<ID3D12Device> device;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> list;ComPtr<ID3D12Fence> sharedFence;ComPtr<ID3D12Fence> localFence;HANDLE localEvent{};UINT64 localFenceValue{};
     ComPtr<ID3D12Resource> color,output,motion,depth,controlMask,refinementScratch;LONG configSeen{};LONG frameSeen{};
@@ -118,7 +120,7 @@ struct Host {
 
     bool openSession(const std::wstring& name){session=name;mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name.c_str());if(!mapping)return false;shared=(Shared*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared));if(!shared||shared->magic!=kMagic||shared->abi!=kAbi)return false;mark(shared,PipelineStage::HostStarted);frameEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Frame").c_str());stopEvent=OpenEventW(SYNCHRONIZE,FALSE,(name+L".Stop").c_str());doneEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Done").c_str());if(!frameEvent||!stopEvent||!doneEvent)return false;shared->hostPid=GetCurrentProcessId();bridgeProcess=OpenProcess(SYNCHRONIZE,FALSE,shared->bridgePid);mark(shared,PipelineStage::HostConnected);InterlockedExchange(&shared->state,(LONG)State::WaitingConfig);wcscpy_s(shared->message,L"External NR host waiting for GPU resource configuration");return true;}
 
-    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_HIGH;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue)))){q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;}if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
+    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_HIGH;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue)))){q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;}if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;gpuTimer.initialize(device.Get(),queue.Get());mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
 
     bool openTransferred(std::uint64_t wireHandle,REFIID iid,void** out,HRESULT& result){
         if(!wireHandle){result=E_INVALIDARG;return false;}
@@ -273,6 +275,7 @@ struct Host {
         const LONG seq=InterlockedCompareExchange(&shared->frameSeq,0,0);
         if(seq<=frameSeen||!feature)return;
         frameSeen=seq;
+        if(auto elapsed=gpuTimer.consume(sharedFence.Get()))shared->lastGpuMs=*elapsed;
         const UINT64 in=(UINT64)InterlockedCompareExchange64(&shared->inputFenceValue,0,0);
         const UINT64 out=(UINT64)InterlockedCompareExchange64(&shared->outputFenceValue,0,0);
         const std::uint32_t requestedPasses=std::clamp<std::uint32_t>(shared->nrPassesRequested,1u,4u);
@@ -284,6 +287,7 @@ struct Host {
         NVSDK_NGX_Result r=NVSDK_NGX_Result_Fail;
         std::uint32_t executedPasses=0;
         if(beginList()){
+            gpuTimer.begin(list.Get());
             std::array<D3D12_RESOURCE_BARRIER,5>b={
                 tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 tr(motion.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -337,6 +341,7 @@ struct Host {
                 add(depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
                 add(controlMask.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);
                 if(n)list->ResourceBarrier(n,finish.data());
+                gpuTimer.end(list.Get());
                 if(SUCCEEDED(list->Close())){ID3D12CommandList*l[]={list.Get()};queue->ExecuteCommandLists(1,l);success=true;}
             }else list->Close();
         }
@@ -349,6 +354,7 @@ struct Host {
             setMessage(shared,PipelineStage::HostRuntimeFailed,(int)signalHr,L"NRHost: failed to enqueue output fence signal");
             InterlockedExchange(&shared->state,(LONG)State::Error);InterlockedExchange(&shared->completedSeq,seq);SetEvent(doneEvent);return;
         }
+        if(success)gpuTimer.submitted(out);
         // Publish enqueue immediately after the queue signal is accepted. The
         // bridge still requires completedSeq + the shared GPU fence for exact
         // output readiness, so this only removes unnecessary CPU-side delay.

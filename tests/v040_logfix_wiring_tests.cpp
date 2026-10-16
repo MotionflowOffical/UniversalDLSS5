@@ -14,7 +14,7 @@ int main(){
     const auto on12=read("src/gpu/d3d12_on12.cpp");
     bool ok=true;
     ok&=need(ui,"shouldAttachRendererProcess(p.pid==root.pid,p.hasDxgi,p.rendererModules)","process-tree attach is still DXGI-only and will skip D3D9/OpenGL/Vulkan renderer children");
-    ok&=need(dxgi,"chooseD3D12Route(c.queueProof,c.recovery,st.lastTickMs)","D3D12 queue classification does not distinguish exact creation queues from inferred recovery queues");
+    ok&=need(dxgi,"chooseD3D12Route(c.queueProof,c.recovery,st.lastTickMs,set.backend==BackendMode::ExternalHostNR)","D3D12 route classification does not preserve external-host guide sharing on creation-proven queues");
     ok&=need(dxgi,"synchronizeRecoveryBeforePresent","D3D12 recovery route is not requesting a safe completion wait before Present");
     ok&=need(on12h,"bool synchronizeBeforePresent=false","D3D12On12 process API cannot isolate recovery-only synchronization");
     ok&=need(on12,"if(synchronizeBeforePresent && !waitCopyContext(postCopy_,st))return false;","recovery path does not wait for the injected post-copy to finish before DXGI Present");

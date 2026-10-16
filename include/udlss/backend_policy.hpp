@@ -3,6 +3,9 @@
 #include <string_view>
 
 namespace udlss {
+inline constexpr bool isNeuralEvaluation(BackendMode requested,bool fallback,bool evaluated) {
+    return requested!=BackendMode::Passthrough && !fallback && evaluated;
+}
 inline constexpr std::wstring_view backendDisplayName(BackendMode requested, bool fallback) {
     if (requested == BackendMode::InGameNR)
         return fallback ? std::wstring_view(L"Passthrough (direct + external NR unavailable)")

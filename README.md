@@ -4,7 +4,8 @@ Runtime SDK DLL imports use verification and atomic replacement. Graphics hooks,
 
 # UniversalDLSS5
 
-**Current version:** v0.4.4  
+**Current version:** v0.5.0
+
 **Status:** Experimental Windows graphics injector/controller
 
 UniversalDLSS5 is an experimental project that brings NVIDIA DLSS Neural Rendering / Feature 18 to games and applications that do not expose the feature natively. It hooks the game's presentation API, builds the required color/temporal inputs, executes the neural path, and composites the result back into the original renderer.
@@ -26,7 +27,7 @@ Modern D3D11/D3D12 games that already work stay on their existing low-latency pa
 
 For **32-bit** games, the x86 bridge captures the renderer while the real Feature 18 work runs in the 64-bit `UniversalDLSS5.NRHost.exe` process.
 
-## v0.4.4 highlights
+## Features
 
 - D3D9, D3D10, D3D11, D3D12, OpenGL and Vulkan renderer routing.
 - x86 game support through the x64 Feature 18 host.
@@ -69,13 +70,18 @@ The **NR passes** control supports 1x-4x processing on both direct and external-
 2. Start `UniversalDLSS5.exe`.
 3. Open the **NVIDIA Runtime** setup page and choose **Import NVIDIA SDK**.
 4. Point UniversalDLSS5 at an official NVIDIA SDK/runtime package containing `nvngx_dlssnr.dll`.
-5. Launch the game, select its process, then attach.
+5. Use **Launch and attach...** to choose the game's executable. Wait for **Neural Active** in its startup/menu scene before loading gameplay. This lets neural GPU allocations initialize before game streaming fills VRAM.
+6. For an application that is already running, select its process and use **Attach**. Starting the neural host after VRAM is full can be substantially slower.
 
 NVIDIA proprietary runtime binaries are **not distributed** in this repository. See [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md).
 
 ## Usage and diagnostics
 
 The controller exposes renderer route, source API, game/process architecture, motion source, depth source, queue confidence, Feature 18 status, GPU time and external-host state.
+
+You can also start the controller with `UniversalDLSS5.exe --launch "C:\path\game.exe"`. It uses that executable's saved profile and working directory. Only one controller can own the shared settings at a time; a second instance exits with Windows code 183. Use the existing controller's launch button when it is already open.
+
+For D3D12 with **External host**, the shared-resource path uses owned motion/depth snapshots and completes the composite before Present, including when the presenting queue was captured at startup. Keep **Neural passes** at **1x** for a single evaluation per frame.
 
 Logs are written under:
 
@@ -116,10 +122,10 @@ The build produces x64 components plus the x86 bridge/injector required for 32-b
 
 ## Documentation
 
-- [`docs/V0.4.4_RELEASE.md`](docs/V0.4.4_RELEASE.md) — current release notes
-- [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) — NVIDIA runtime import/setup
-- [`docs/GAME_GUIDES_SAFE_ATTACH.md`](docs/GAME_GUIDES_SAFE_ATTACH.md) — temporal-guide and safe-attach notes
-- [`docs/V0.4.0_RELEASE.md`](docs/V0.4.0_RELEASE.md) — renderer compatibility architecture
+- [`docs/V0.4.4_RELEASE.md`](docs/V0.4.4_RELEASE.md) Ă˘â‚¬â€ť current release notes
+- [`docs/NVIDIA_RUNTIME_SETUP.md`](docs/NVIDIA_RUNTIME_SETUP.md) Ă˘â‚¬â€ť NVIDIA runtime import/setup
+- [`docs/GAME_GUIDES_SAFE_ATTACH.md`](docs/GAME_GUIDES_SAFE_ATTACH.md) Ă˘â‚¬â€ť temporal-guide and safe-attach notes
+- [`docs/V0.4.0_RELEASE.md`](docs/V0.4.0_RELEASE.md) Ă˘â‚¬â€ť renderer compatibility architecture
 
 ## License
 

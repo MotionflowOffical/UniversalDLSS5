@@ -1,7 +1,15 @@
 #include <cassert>
 #include <string>
+#include <iostream>
 #include "udlss/profile.hpp"
 int main(){
+    udlss::Settings windowsProfile{};
+    if(!udlss::decodeProfile("version=10\r\nenabled=1\r\nuseGameDepth=true\r\n"
+        "loadGameGuideAdapter=TRUE\r\nattemptUnsupportedHardware=1\r\nprotectUI=0\r\n",windowsProfile)||
+        !windowsProfile.enabled||!windowsProfile.useGameDepth||!windowsProfile.loadGameGuideAdapter||
+        !windowsProfile.attemptUnsupportedHardware||windowsProfile.protectUI){
+        std::cerr<<"Windows profile line endings disabled processing or guide settings\n";return 1;
+    }
     udlss::Settings s = udlss::defaultSettings();
     s.sharpness = 0.42f; s.flowSearchRadius = 9; s.protectUI = false; s.nrIntensity=0.67f; s.nrTone=0.25f; s.nrStructure=1.26f; s.staticMotionDeadzone=0.75f; s.depthMode=udlss::DepthGuideMode::ForceNormal; s.debugView=udlss::DebugView::Split; s.nrPasses=3; s.maxFramesInFlight=7; s.uiTheme=udlss::UiTheme::Dark; s.framePacing=udlss::FramePacingMode::Adaptive;
     auto text = udlss::encodeProfile(s);

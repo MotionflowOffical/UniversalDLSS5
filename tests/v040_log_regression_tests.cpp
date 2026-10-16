@@ -2,6 +2,7 @@
 #include "udlss/d3d12_route_policy.hpp"
 #include <cassert>
 #include <cstdint>
+#include <iostream>
 
 int main(){
     using namespace udlss;
@@ -43,6 +44,19 @@ int main(){
     assert(native.route==RendererRoute::NativeD3D12);
     assert(!native.synchronizeBeforePresent);
     assert(native.queueId==0x2000);
+
+    // Exact queue proof does not make game-owned D3D12 textures shareable
+    // with an external D3D11/NRHost device. Preserve the proof and stage owned
+    // guides through the synchronized sharing route for an external backend.
+    const auto shared=chooseD3D12Route(exact,exactRecovery,500000,true);
+    if(!shared.trusted||!shared.exactCreationQueue||shared.queueId!=0x2000||shared.confidence!=100||
+       shared.route!=RendererRoute::ModernD3D12Recovery||!shared.synchronizeBeforePresent){
+        std::cerr<<"External host on a creation-proven queue bypassed owned guide staging\n";return 1;
+    }
+    const auto unproven=chooseD3D12Route({}, {},500000,true);
+    if(native.route!=RendererRoute::NativeD3D12||native.synchronizeBeforePresent||unproven.trusted){
+        std::cerr<<"External interop changed native queue routing or admitted an unproven queue\n";return 1;
+    }
 
     return 0;
 }

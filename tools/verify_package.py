@@ -143,7 +143,7 @@ for forbidden in ['params->Set(kPaperWhite', 'params->Set(kTransferStrength', 'p
         fail(f'v0.4.1 NRHost sends a non-contract generic parameter: {forbidden}')
 if 'OpenSharedHandleByName' in host_source:
     fail('external NR host must not rediscover D3D11-created GPU objects by name')
-for token in ['kAbi=6', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
+for token in ['kAbi=7', 'lastGpuMs', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
     if token not in host_protocol:
         fail(f'external-host protocol missing duplicated-handle field: {token}')
 for token in ['kMagic', 'kAbi', 'inputFenceValue', 'outputFenceValue', 'enqueuedSeq']:
@@ -233,7 +233,7 @@ for forbidden in ['snapshotVolatileD3D12Guide', 'CopyResource(snapshot.Get(),sou
 
 # External NRHost must carry the selected pass count and execute the same-frame
 # reset-only refinement chain instead of silently collapsing 2x-4x to one pass.
-for token in ['kAbi=6', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
+for token in ['kAbi=7', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
     if token not in host_protocol:
         fail(f'v0.4.4 external-host multipass protocol missing: {token}')
 for token in ['nrPassesRequested=st.neuralPassesRequested', 'st.neuralPassesExecuted=shared_->nrPassesExecuted']:
@@ -243,8 +243,8 @@ for token in ['refinementFeature', 'refinementScratch', 'ensureRefinementFeature
     if token not in host_source:
         fail(f'v0.4.4 NRHost refinement chain missing: {token}')
 
-if 'project(UniversalDLSS5 VERSION 0.4.4' not in cmake_root:
-    fail('CMake project version is not v0.4.4')
+if 'project(UniversalDLSS5 VERSION 0.5.0' not in cmake_root:
+    fail('CMake project version is not v0.5.0')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
@@ -395,7 +395,7 @@ for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'C
         fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
 if 'CreateWrappedResource(bb.Get()' in on12:
     fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
-for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.4.4']:
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.5.0']:
     if token not in attach_logger:
         fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 

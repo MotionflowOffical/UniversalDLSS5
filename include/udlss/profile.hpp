@@ -76,6 +76,9 @@ inline bool decodeProfile(std::string_view text, Settings& out) {
     auto setF=[&](std::string_view v,float& x){ try{x=std::stof(std::string(v));}catch(...){}};
     auto setU=[&](std::string_view v,std::uint32_t& x){ try{x=static_cast<std::uint32_t>(std::stoul(std::string(v)));}catch(...){}};
     while(std::getline(in,line)){
+        // Binary file reads preserve the CR in Windows CRLF profiles. Boolean
+        // values must see "1"/"true", not "1\r"/"true\r".
+        if(!line.empty()&&line.back()=='\r')line.pop_back();
         if(line.empty()||line[0]=='#') continue;
         auto p=line.find('='); if(p==std::string::npos) continue;
         std::string_view k(line.data(),p), v(line.data()+p+1,line.size()-p-1); any=true;

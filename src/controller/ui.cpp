@@ -1,6 +1,7 @@
 #include "ui.hpp"
 #include "processes.hpp"
 #include "inject_client.hpp"
+#include "launch_client.hpp"
 #include "runtime_importer.hpp"
 #include "resource.h"
 #include "udlss/shared_control.hpp"
@@ -52,7 +53,7 @@ enum class HitKind { Nav, Button, Toggle, Choice, Slider, AppRow };
 
 enum ButtonId : int {
     BTN_REFRESH=1, BTN_ATTACH, BTN_DETACH, BTN_RESET_HISTORY, BTN_BROWSE, BTN_CHECK_RUNTIME,
-    BTN_RETRY_NEURAL, BTN_COPY_DIAG, BTN_SAVE_DIAG, BTN_OPEN_LOGS, BTN_IMPORT_NVIDIA, BTN_OPEN_RUNTIME, BTN_NVIDIA_DOWNLOAD
+    BTN_RETRY_NEURAL, BTN_COPY_DIAG, BTN_SAVE_DIAG, BTN_OPEN_LOGS, BTN_IMPORT_NVIDIA, BTN_OPEN_RUNTIME, BTN_NVIDIA_DOWNLOAD, BTN_LAUNCH
 };
 enum ToggleId : int {
     TGL_SHOW_ALL=1, TGL_ENABLE, TGL_UI_PROTECT, TGL_CTRL_MASK, TGL_AUTO_MASK, TGL_UI_CORRECTION,
@@ -134,6 +135,7 @@ struct State {
     ProcessInfo maintenanceRoot{};
     bool maintenanceEnabled{};
     bool maintenanceFollowTree{true};
+    std::uint64_t maintenanceGeneration{};
     std::atomic_bool autoDetachedPending{false};
 
     BadgeState badgeState{BadgeState::Waiting};
@@ -430,12 +432,17 @@ void pruneInjected(){std::unordered_set<DWORD> alive;for(const auto&p:enumerateP
 std::vector<ProcessInfo> attachTargetsFor(const ProcessInfo&root,bool followTree){if(!followTree)return{root};auto tree=processTree(root.pid);std::vector<ProcessInfo>out;out.reserve(tree.size());for(const auto&p:tree)if(shouldAttachRendererProcess(p.pid==root.pid,p.hasDxgi,p.rendererModules))out.push_back(p);return out;}
 struct AttachPassResult{int loaded{},failed{};std::wstring lastError;};
 AttachPassResult injectTargetsOnce(const ProcessInfo&root,bool followTree,bool prune=true){AttachPassResult result{};if(prune)pruneInjected();for(const auto&target:attachTargetsFor(root,followTree)){bool reserved=false;{std::scoped_lock lock(g.injectedMutex);if(!g.injected.contains(target.pid)){g.injected.insert(target.pid);reserved=true;}}if(!reserved)continue;std::wstring message;if(injectBridge(target,g.appDir,message))++result.loaded;else{{std::scoped_lock lock(g.injectedMutex);g.injected.erase(target.pid);}++result.failed;result.lastError=target.name+L": "+message;}}return result;}
-void configureMaintenance(const ProcessInfo&root,bool enabled){std::scoped_lock lock(g.maintenanceMutex);g.maintenanceRoot=root;g.maintenanceEnabled=enabled;g.maintenanceFollowTree=g.settings.attachProcessTree;}
+void configureMaintenance(const ProcessInfo&root,bool enabled){
+    std::scoped_lock lock(g.maintenanceMutex);
+    ++g.maintenanceGeneration;g.autoDetachedPending.store(false,std::memory_order_release);
+    g.maintenanceRoot=root;g.maintenanceEnabled=enabled;g.maintenanceFollowTree=g.settings.attachProcessTree;
+    if(enabled)g.shared.requestUnload(false);
+}
 void maintenanceLoop(std::stop_token stop){
     unsigned cycle=0;
     while(!stop.stop_requested()){
-        ProcessInfo root{};bool enabled=false,follow=false;
-        {std::scoped_lock lock(g.maintenanceMutex);root=g.maintenanceRoot;enabled=g.maintenanceEnabled;follow=g.maintenanceFollowTree;}
+        ProcessInfo root{};bool enabled=false,follow=false;std::uint64_t generation{};
+        {std::scoped_lock lock(g.maintenanceMutex);root=g.maintenanceRoot;enabled=g.maintenanceEnabled;follow=g.maintenanceFollowTree;generation=g.maintenanceGeneration;}
         if(enabled&&root.pid){
             const auto aliveProcesses=enumerateProcesses();
             const auto tracked=injectedSnapshot();
@@ -444,9 +451,12 @@ void maintenanceLoop(std::stop_token stop){
                 if(p.pid==root.pid||tracked.contains(p.pid)){anyAttachedAlive=true;break;}
             }
             if(!anyAttachedAlive){
-                g.shared.requestUnload(true);
-                g.autoDetachedPending.store(true,std::memory_order_release);
-                {std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};}
+                std::scoped_lock lock(g.maintenanceMutex);
+                if(g.maintenanceGeneration==generation&&g.maintenanceEnabled){
+                    g.shared.requestUnload(true);
+                    g.autoDetachedPending.store(true,std::memory_order_release);
+                    g.maintenanceEnabled=false;g.maintenanceRoot={};
+                }
             }else{
                 injectTargetsOnce(root,follow,(cycle%4u)==0u);
                 ++cycle;
@@ -457,6 +467,47 @@ void maintenanceLoop(std::stop_token stop){
 }
 
 void injectCurrentTree(){auto*p=selected();if(!p)return;if(!validateRuntimeForAttach(true))return;g.rootPid=p->pid;g.rootPath=p->path;g.shared.raw()->rootPid=g.rootPid;g.shared.setRuntimePath(g.runtimePath.c_str());g.shared.requestUnload(false);g.primaryRendererPid=0;g.shared.setPrimaryRendererPid(0);configureMaintenance(*p,true);auto r=injectTargetsOnce(*p,g.settings.attachProcessTree,true);setStatusText(L"Attach pass: "+std::to_wstring(r.loaded)+L" loaded, "+std::to_wstring(r.failed)+L" skipped/failed. "+r.lastError);}
+
+void launchAndAttach(const std::wstring& requestedExecutable){
+    std::error_code pathError;
+    const auto absolute=fs::absolute(requestedExecutable,pathError).lexically_normal();
+    if(pathError){setStatusText(L"Application path is invalid.");return;}
+    const auto executable=absolute.wstring();
+    const auto processes=enumerateProcesses();
+    ProcessInfo process{};
+    for(const auto& p:processes)if(_wcsicmp(p.path.c_str(),executable.c_str())==0){process=p;break;}
+    const bool alreadyRunning=process.pid!=0;
+    // A second launch must not replace settings underneath an attached renderer.
+    DWORD ownedRoot{};
+    {std::scoped_lock lock(g.maintenanceMutex);if(g.maintenanceEnabled)ownedRoot=g.maintenanceRoot.pid;}
+    const auto tracked=injectedSnapshot();
+    for(const auto& p:processes)if(p.pid!=process.pid&&(p.pid==ownedRoot||tracked.contains(p.pid))){
+        setStatusText(L"Detach the current application before launching another.");return;
+    }
+    const auto now=GetTickCount64();
+    for(const auto& status:g.shared.readStatuses())if(status.pid&&status.pid!=process.pid&&now>=status.lastTickMs&&now-status.lastTickMs<3000&&
+        (status.state==RuntimeState::Processing||status.state==RuntimeState::Hooked||status.state==RuntimeState::Bypassed)){
+        setStatusText(L"Detach the current application before launching another.");return;
+    }
+    saveProfileIfDirty();
+    const auto previous=g.settings;
+    Settings profile{};
+    g.settings=loadProfileFile(profilePath(executable),profile)?profile:defaultSettings();
+    g.settings.uiTheme=previous.uiTheme;
+    if(!validateRuntimeForAttach(false)){g.settings=previous;return;}
+    std::wstring message;
+    if(!alreadyRunning&&!launchApplication(executable,process,message)){g.settings=previous;setStatusText(message);return;}
+    g.rootPid=process.pid;g.rootPath=process.path;g.primaryRendererPid=0;g.selectedIndex=-1;g.presetIndex=5;
+    g.shared.raw()->rootPid=process.pid;g.shared.setPrimaryRendererPid(0);
+    g.shared.setRuntimePath(g.runtimePath.c_str());writeLive(false);g.shared.requestUnload(false);
+    // Do not wait for a visible window or gameplay. Create the neural feature
+    // during startup/menu rendering, before game streaming fills local memory.
+    configureMaintenance(process,true);
+    const auto result=injectTargetsOnce(process,g.settings.attachProcessTree,true);
+    setStatusText(result.loaded?(alreadyRunning?L"Attached to the running application. For best performance, attach before loading gameplay.":
+        L"Launched and attached. Wait for Neural Active before loading gameplay."):
+        L"Launched; early attachment will retry. "+result.lastError);
+}
 
 RuntimeStatus electedStatus(const std::array<RuntimeStatus,32>&statuses,std::uint32_t pid){RuntimeStatus newest{};for(const auto&st:statuses){if(pid&&st.pid==pid)return st;if(!pid&&st.pid&&st.lastTickMs>=newest.lastTickMs)newest=st;}return newest;}
 void poll(){saveProfileIfDirty();
@@ -470,19 +521,30 @@ void poll(){saveProfileIfDirty();
 
 std::wstring pickFolder(HWND owner){IFileOpenDialog*dialog=nullptr;std::wstring out;if(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))){DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM);if(SUCCEEDED(dialog->Show(owner))){IShellItem*item=nullptr;if(SUCCEEDED(dialog->GetResult(&item))){PWSTR path=nullptr;if(SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))){out=path;CoTaskMemFree(path);}item->Release();}}dialog->Release();}return out;}
 
+std::wstring pickExecutable(HWND owner){
+    ComPtr<IFileOpenDialog> dialog;std::wstring path;
+    if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))))return path;
+    const COMDLG_FILTERSPEC types[]={{L"Application (*.exe)",L"*.exe"}};
+    dialog->SetFileTypes(1,types);dialog->SetTitle(L"Launch and attach before loading gameplay");
+    dialog->SetOptions(FOS_FORCEFILESYSTEM|FOS_FILEMUSTEXIST|FOS_PATHMUSTEXIST|FOS_NOCHANGEDIR);
+    if(SUCCEEDED(dialog->Show(owner))){ComPtr<IShellItem> item;PWSTR value{};
+        if(SUCCEEDED(dialog->GetResult(&item))&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value))){path=value;CoTaskMemFree(value);}}
+    return path;
+}
+
 void applyPresetIndex(int index){if(index<0||index>=5)return;applyPreset(g.settings,(TuningPreset)index);g.presetIndex=index;writeLive();g.shared.requestHistoryReset();}
 
 void setToggle(int id){switch(id){case TGL_SHOW_ALL:g.showAllProcesses=!g.showAllProcesses;refresh();if(g.selectedIndex>=0)selectChanged(g.selectedIndex);return;case TGL_ENABLE:g.settings.enabled=!g.settings.enabled;break;case TGL_UI_PROTECT:g.settings.protectUI=!g.settings.protectUI;break;case TGL_CTRL_MASK:g.settings.useControlMask=!g.settings.useControlMask;break;case TGL_AUTO_MASK:g.settings.nrAutoMask=!g.settings.nrAutoMask;break;case TGL_UI_CORRECTION:g.settings.nrUiCorrection=!g.settings.nrUiCorrection;break;case TGL_INVERT_Y:g.settings.invertMotionY=!g.settings.invertMotionY;break;case TGL_RESET_GAP:g.settings.resetOnTemporalGap=!g.settings.resetOnTemporalGap;break;case TGL_GAME_DEPTH:g.settings.useGameDepth=!g.settings.useGameDepth;break;case TGL_GAME_ADAPTER:g.settings.loadGameGuideAdapter=!g.settings.loadGameGuideAdapter;break;case TGL_TREE:g.settings.attachProcessTree=!g.settings.attachProcessTree;break;case TGL_ON12:g.settings.allowD3D11On12=!g.settings.allowD3D11On12;break;case TGL_SECONDARY:g.settings.processSecondarySwapchains=!g.settings.processSecondarySwapchains;break;case TGL_UNSUPPORTED:g.settings.attemptUnsupportedHardware=!g.settings.attemptUnsupportedHardware;break;default:return;}markCustomPreset();writeLive();}
 
 void setChoice(int id,int value){switch(id){case CH_PRESET:applyPresetIndex(value);return;case CH_BACKEND:g.settings.backend=(BackendMode)std::clamp(value,0,2);break;case CH_PACING:g.settings.framePacing=(FramePacingMode)std::clamp(value,0,2);g.shared.requestHistoryReset();break;case CH_PASSES:g.settings.nrPasses=(std::uint32_t)std::clamp(value+1,1,4);break;case CH_STYLE:g.settings.nrStyle=(std::uint32_t)std::clamp(value,0,6);break;case CH_MODEL_PRESET:g.settings.nrPreset=(std::uint32_t)std::clamp(value,0,3);g.shared.requestHistoryReset();break;case CH_MOTION:g.settings.motionSource=(MotionSource)std::clamp(value,0,2);g.shared.requestHistoryReset();break;case CH_LATENCY:g.settings.latencyMode=(LatencyMode)std::clamp(value,0,2);break;case CH_DOWNSAMPLE:g.settings.flowDownsample=1u<<std::clamp(value,0,3);break;case CH_DEPTH:g.settings.depthMode=(DepthGuideMode)std::clamp(value,0,3);g.shared.requestHistoryReset();break;case CH_DEBUG:g.settings.debugView=(DebugView)std::clamp(value,0,8);break;case CH_THEME:g.settings.uiTheme=(UiTheme)std::clamp(value,0,2);saveControllerPreferences();writeLive();applyTheme();return;case CH_HDR:g.settings.hdrMode=(HdrMode)std::clamp(value,0,2);g.shared.requestHistoryReset();break;default:return;}markCustomPreset();writeLive();}
 
-void handleButton(int id){switch(id){case BTN_REFRESH:if(g.refreshingApps)break;g.refreshingApps=true;InvalidateRect(g.hwnd,nullptr,FALSE);UpdateWindow(g.hwnd);refresh();if(g.selectedIndex>=0)selectChanged(g.selectedIndex);g.refreshStartedMs=GetTickCount64();SetTimer(g.hwnd,2,(UINT)kAppPickerRefreshFeedbackMs,nullptr);InvalidateRect(g.hwnd,nullptr,FALSE);break;case BTN_ATTACH:injectCurrentTree();break;case BTN_DETACH:{std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};}g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);g.primaryRendererPid=0;clearInjectedTracking();setBadge(BadgeState::Waiting);setStatusText(L"Unload requested for injected bridges.");break;case BTN_RESET_HISTORY:g.shared.requestHistoryReset();setStatusText(L"Temporal history reset requested.");break;case BTN_BROWSE:{auto path=pickFolder(g.hwnd);if(!path.empty()){g.runtimePath=path;saveRuntimePathPreference(path);g.shared.setRuntimePath(path.c_str());setStatusText(validateRuntimeFolder(path));}}break;case BTN_CHECK_RUNTIME:setStatusText(validateRuntimeFolder(g.runtimePath));break;case BTN_IMPORT_NVIDIA:{auto sdk=pickFolder(g.hwnd);if(!sdk.empty()){setStatusText(L"Scanning the selected NVIDIA SDK for signed x64 Neural Rendering runtime files...");UpdateWindow(g.hwnd);auto result=importNvidiaRuntimeFromSdk(sdk,g.runtimePath);g.shared.setRuntimePath(g.runtimePath.c_str());setStatusText(result.summary);}}break;case BTN_OPEN_RUNTIME:{std::error_code ec;fs::create_directories(g.runtimePath,ec);ShellExecuteW(g.hwnd,L"open",g.runtimePath.c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;}case BTN_NVIDIA_DOWNLOAD:ShellExecuteW(g.hwnd,L"open",L"https://developer.nvidia.com/rtx/streamline/get-started",nullptr,nullptr,SW_SHOWNORMAL);break;case BTN_RETRY_NEURAL:g.shared.requestNeuralRetry();setBadge(BadgeState::Waiting);setStatusText(L"Neural backend retry requested.");break;case BTN_COPY_DIAG:setStatusText(copyDiagnosticsToClipboard()?L"Diagnostics copied to clipboard.":L"No diagnostics available to copy.");break;case BTN_SAVE_DIAG:{auto p=saveDiagnosticsToFile();setStatusText(p.empty()?L"Could not save diagnostics.":L"Saved diagnostics: "+p);}break;case BTN_OPEN_LOGS:setStatusText(openLogsDirectory()?L"Opened attach/diagnostic logs folder.":L"Could not open the logs folder.");break;}}
+void handleButton(int id){switch(id){case BTN_REFRESH:if(g.refreshingApps)break;g.refreshingApps=true;InvalidateRect(g.hwnd,nullptr,FALSE);UpdateWindow(g.hwnd);refresh();if(g.selectedIndex>=0)selectChanged(g.selectedIndex);g.refreshStartedMs=GetTickCount64();SetTimer(g.hwnd,2,(UINT)kAppPickerRefreshFeedbackMs,nullptr);InvalidateRect(g.hwnd,nullptr,FALSE);break;case BTN_ATTACH:injectCurrentTree();break;case BTN_LAUNCH:{auto executable=pickExecutable(g.hwnd);if(!executable.empty())launchAndAttach(executable);}break;case BTN_DETACH:{std::scoped_lock lock(g.maintenanceMutex);g.maintenanceEnabled=false;g.maintenanceRoot={};}g.shared.requestUnload(true);g.shared.setPrimaryRendererPid(0);g.primaryRendererPid=0;clearInjectedTracking();setBadge(BadgeState::Waiting);setStatusText(L"Unload requested for injected bridges.");break;case BTN_RESET_HISTORY:g.shared.requestHistoryReset();setStatusText(L"Temporal history reset requested.");break;case BTN_BROWSE:{auto path=pickFolder(g.hwnd);if(!path.empty()){g.runtimePath=path;saveRuntimePathPreference(path);g.shared.setRuntimePath(path.c_str());setStatusText(validateRuntimeFolder(path));}}break;case BTN_CHECK_RUNTIME:setStatusText(validateRuntimeFolder(g.runtimePath));break;case BTN_IMPORT_NVIDIA:{auto sdk=pickFolder(g.hwnd);if(!sdk.empty()){setStatusText(L"Scanning the selected NVIDIA SDK for signed x64 Neural Rendering runtime files...");UpdateWindow(g.hwnd);auto result=importNvidiaRuntimeFromSdk(sdk,g.runtimePath);g.shared.setRuntimePath(g.runtimePath.c_str());setStatusText(result.summary);}}break;case BTN_OPEN_RUNTIME:{std::error_code ec;fs::create_directories(g.runtimePath,ec);ShellExecuteW(g.hwnd,L"open",g.runtimePath.c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;}case BTN_NVIDIA_DOWNLOAD:ShellExecuteW(g.hwnd,L"open",L"https://developer.nvidia.com/rtx/streamline/get-started",nullptr,nullptr,SW_SHOWNORMAL);break;case BTN_RETRY_NEURAL:g.shared.requestNeuralRetry();setBadge(BadgeState::Waiting);setStatusText(L"Neural backend retry requested.");break;case BTN_COPY_DIAG:setStatusText(copyDiagnosticsToClipboard()?L"Diagnostics copied to clipboard.":L"No diagnostics available to copy.");break;case BTN_SAVE_DIAG:{auto p=saveDiagnosticsToFile();setStatusText(p.empty()?L"Could not save diagnostics.":L"Saved diagnostics: "+p);}break;case BTN_OPEN_LOGS:setStatusText(openLogsDirectory()?L"Opened attach/diagnostic logs folder.":L"Could not open the logs folder.");break;}}
 
 void drawBadge(float x,float y){const wchar_t*txt=badgeText(g.badgeState);ID2D1Brush*b=g.mutedBrush.Get();if(g.badgeState==BadgeState::Active)b=g.goodBrush.Get();else if(g.badgeState==BadgeState::Passthrough)b=g.warnBrush.Get();else if(g.badgeState==BadgeState::Error)b=g.badBrush.Get();D2D1_RECT_F r=D2D1::RectF(x,y,x+112,y+30);fillRounded(r,15.f,b);drawText(txt,r,g.smallCenterFormat.Get(),g.whiteBrush.Get());}
 
 void drawHeader(float w){g.target->FillRectangle(D2D1::RectF(0,0,w,kTopH),g.surfaceBrush.Get());g.target->DrawLine(D2D1::Point2F(0,kTopH-.5f),D2D1::Point2F(w,kTopH-.5f),g.borderBrush.Get());drawText(L"Universal DLSS 5",D2D1::RectF(24,16,300,45),g.titleFormat.Get(),g.textBrush.Get());std::wstring sub=selectedApplicationName();if(g.lastRuntimeStatus.width)sub+=L" \u00B7 "+std::wstring(graphicsApiText(g.lastRuntimeStatus.api))+L" \u00B7 "+std::to_wstring(g.lastRuntimeStatus.width)+L"\u00D7"+std::to_wstring(g.lastRuntimeStatus.height);drawText(sub,D2D1::RectF(25,47,w-190,68),g.smallFormat.Get(),g.mutedBrush.Get());drawBadge(w-142,22);}
 
-void drawSidebar(float h){g.target->FillRectangle(D2D1::RectF(0,kTopH,kSidebarW,h),g.surfaceBrush.Get());g.target->DrawLine(D2D1::Point2F(kSidebarW-.5f,kTopH),D2D1::Point2F(kSidebarW-.5f,h),g.borderBrush.Get());static const wchar_t*names[]={L"Application",L"Neural Rendering",L"Motion",L"Composition",L"Diagnostics",L"Advanced"};for(int i=0;i<6;++i){float y=kTopH+20+i*48;D2D1_RECT_F r=D2D1::RectF(14,y,kSidebarW-14,y+38);bool sel=(int)g.page==i;if(sel)fillRounded(r,9.f,g.accentSoftBrush.Get());drawText(names[i],D2D1::RectF(28,y,170,y+38),g.bodyFormat.Get(),sel?g.accentBrush.Get():g.textBrush.Get());addHit(r,HitKind::Nav,i);}drawText(L"v0.4.4 experimental",D2D1::RectF(20,h-40,kSidebarW-16,h-18),g.smallFormat.Get(),g.mutedBrush.Get());}
+void drawSidebar(float h){g.target->FillRectangle(D2D1::RectF(0,kTopH,kSidebarW,h),g.surfaceBrush.Get());g.target->DrawLine(D2D1::Point2F(kSidebarW-.5f,kTopH),D2D1::Point2F(kSidebarW-.5f,h),g.borderBrush.Get());static const wchar_t*names[]={L"Application",L"Neural Rendering",L"Motion",L"Composition",L"Diagnostics",L"Advanced"};for(int i=0;i<6;++i){float y=kTopH+20+i*48;D2D1_RECT_F r=D2D1::RectF(14,y,kSidebarW-14,y+38);bool sel=(int)g.page==i;if(sel)fillRounded(r,9.f,g.accentSoftBrush.Get());drawText(names[i],D2D1::RectF(28,y,170,y+38),g.bodyFormat.Get(),sel?g.accentBrush.Get():g.textBrush.Get());addHit(r,HitKind::Nav,i);}drawText(L"v0.5.0 experimental",D2D1::RectF(20,h-40,kSidebarW-16,h-18),g.smallFormat.Get(),g.mutedBrush.Get());}
 
 void beginPage(const wchar_t*title,const wchar_t*subtitle,float contentX,float&y,float contentW){drawText(title,D2D1::RectF(contentX,y,contentX+contentW,y+30),g.titleFormat.Get(),g.textBrush.Get());y+=34;drawText(subtitle,D2D1::RectF(contentX,y,contentX+contentW,y+38),g.smallFormat.Get(),g.mutedBrush.Get());y+=50;}
 
@@ -491,9 +553,9 @@ void drawApplicationPage(float x,float&y,float w){beginPage(L"Application",L"Sel
     const float listTop=cy;const float listBottom=c.bottom-14.f;g.appListViewport=D2D1::RectF(cx,listTop,cx+cw,listBottom);const float viewportH=std::max(1.f,listBottom-listTop);const int visibleRows=appPickerVisibleRows(viewportH,48.f);g.appListScroll=ensureAppPickerSelectionVisible(g.appListScroll,g.selectedIndex,g.entries.size(),visibleRows);
     if(g.entries.empty())drawText(L"No attachable applications found.",D2D1::RectF(cx,cy,cx+cw,cy+40),g.bodyFormat.Get(),g.mutedBrush.Get());
     else{g.target->PushAxisAlignedClip(g.appListViewport,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);const int first=clampAppPickerScroll(g.appListScroll,g.entries.size(),visibleRows);const int last=std::min<int>((int)g.entries.size(),first+visibleRows);float rowY=listTop;for(int i=first;i<last;++i){auto&e=g.entries[(size_t)i];D2D1_RECT_F row=D2D1::RectF(cx,rowY,cx+cw-14.f,rowY+44.f);bool sel=i==g.selectedIndex;if(sel)fillRounded(row,8.f,g.accentSoftBrush.Get());drawText(e.displayName,D2D1::RectF(cx+12,rowY+5,cx+cw-204,rowY+24),g.bodyFormat.Get(),sel?g.accentBrush.Get():g.textBrush.Get());drawText(processDetail(&e),D2D1::RectF(cx+12,rowY+24,cx+cw-26,rowY+42),g.smallFormat.Get(),g.mutedBrush.Get());addHit(row,HitKind::AppRow,0,i);rowY+=48.f;}g.target->PopAxisAlignedClip();if((int)g.entries.size()>visibleRows){const float trackTop=listTop+2.f,trackBottom=listBottom-2.f,trackH=std::max(1.f,trackBottom-trackTop);const float thumbH=std::max(28.f,trackH*((float)visibleRows/(float)g.entries.size()));const int maxScroll=std::max(1,(int)g.entries.size()-visibleRows);const float t=(float)g.appListScroll/(float)maxScroll;const float thumbTop=trackTop+t*std::max(0.f,trackH-thumbH);D2D1_RECT_F track=D2D1::RectF(cx+cw-6.f,trackTop,cx+cw-2.f,trackBottom);D2D1_RECT_F thumb=D2D1::RectF(cx+cw-7.f,thumbTop,cx+cw-1.f,thumbTop+thumbH);fillRounded(track,2.f,g.borderBrush.Get());fillRounded(thumb,3.f,g.mutedBrush.Get());}}y+=listH+14;
-    float runtimeH=366;card(x,y,w,runtimeH);cy=y+18;drawText(L"NVIDIA runtime & attachment",D2D1::RectF(x+18,cy,x+w-18,cy+24),g.headingFormat.Get(),g.textBrush.Get());cy+=38;drawText(L"Runtime destination",D2D1::RectF(x+18,cy,x+160,cy+20),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.runtimePath,D2D1::RectF(x+18,cy+20,x+w-292,cy+45),g.bodyFormat.Get(),g.textBrush.Get());button(L"Choose folder",x+w-276,cy+8,104,34,BTN_BROWSE);button(L"Open runtime",x+w-162,cy+8,104,34,BTN_OPEN_RUNTIME);cy+=62;
+    float runtimeH=426;card(x,y,w,runtimeH);cy=y+18;drawText(L"NVIDIA runtime & attachment",D2D1::RectF(x+18,cy,x+w-18,cy+24),g.headingFormat.Get(),g.textBrush.Get());cy+=38;drawText(L"Runtime destination",D2D1::RectF(x+18,cy,x+160,cy+20),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.runtimePath,D2D1::RectF(x+18,cy+20,x+w-292,cy+45),g.bodyFormat.Get(),g.textBrush.Get());button(L"Choose folder",x+w-276,cy+8,104,34,BTN_BROWSE);button(L"Open runtime",x+w-162,cy+8,104,34,BTN_OPEN_RUNTIME);cy+=62;
     drawText(L"UniversalDLSS5 does not redistribute NVIDIA's proprietary DLSS runtime. Download/extract the official NVIDIA SDK, then import only the NVIDIA Neural Rendering DLLs into this runtime folder.",D2D1::RectF(x+18,cy,x+w-18,cy+44),g.smallFormat.Get(),g.mutedBrush.Get());cy+=52;button(L"Import NVIDIA SDK...",x+18,cy,170,36,BTN_IMPORT_NVIDIA,true);button(L"NVIDIA download",x+198,cy,132,36,BTN_NVIDIA_DOWNLOAD);button(L"Check runtime",x+340,cy,118,36,BTN_CHECK_RUNTIME);cy+=52;
-    std::vector<std::wstring> backends={L"Direct in-game",L"Passthrough",L"External host"};choiceRow(L"Backend",backends,(int)g.settings.backend,x+18,cy,w-36,CH_BACKEND);button(L"Attach",x+18,cy,92,38,BTN_ATTACH,true);button(L"Detach",x+120,cy,92,38,BTN_DETACH);button(L"Reset history",x+222,cy,116,38,BTN_RESET_HISTORY);button(L"Retry neural",x+348,cy,112,38,BTN_RETRY_NEURAL);y+=runtimeH+14;
+    std::vector<std::wstring> backends={L"Direct in-game",L"Passthrough",L"External host"};choiceRow(L"Backend",backends,(int)g.settings.backend,x+18,cy,w-36,CH_BACKEND);button(L"Attach",x+18,cy,92,38,BTN_ATTACH,true);button(L"Detach",x+120,cy,92,38,BTN_DETACH);button(L"Reset history",x+222,cy,116,38,BTN_RESET_HISTORY);button(L"Retry neural",x+348,cy,112,38,BTN_RETRY_NEURAL);cy+=48;button(L"Launch and attach...",x+18,cy,174,38,BTN_LAUNCH);drawText(L"Start here before loading gameplay to leave room for neural GPU allocations.",D2D1::RectF(x+206,cy,x+w-18,cy+42),g.smallFormat.Get(),g.mutedBrush.Get());y+=runtimeH+14;
     card(x,y,w,78);drawText(L"Status",D2D1::RectF(x+18,y+14,x+90,y+34),g.smallFormat.Get(),g.mutedBrush.Get());drawText(g.statusText,D2D1::RectF(x+18,y+35,x+w-18,y+70),g.bodyFormat.Get(),g.textBrush.Get());y+=92;
     card(x,y,w,96);drawText(L"Security notice",D2D1::RectF(x+18,y+14,x+w-18,y+36),g.headingFormat.Get(),g.warnBrush.Get());drawText(L"Some antivirus products may flag DLL injection or graphics API hooking. Verify the GitHub release hash/source and investigate any warning; do not disable security software just to run UniversalDLSS5.",D2D1::RectF(x+18,y+42,x+w-18,y+88),g.smallFormat.Get(),g.mutedBrush.Get());y+=110;
 }
@@ -549,6 +611,6 @@ case WM_DESTROY:KillTimer(h,1);KillTimer(h,2);{std::scoped_lock lock(g.maintenan
 
 } // namespace
 
-int runUi(HINSTANCE instance,int show){g.inst=instance;g.appDir=applicationDirectory();g.runtimePath=loadRuntimePathPreference(defaultRuntimeDirectory());SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT co=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(!g.shared.create()){if(SUCCEEDED(co))CoUninitialize();return 2;}WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=windowProc;wc.hInstance=instance;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_APP_ICON));wc.hIconSm=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP_ICON),IMAGE_ICON,16,16,LR_DEFAULTCOLOR);wc.hbrBackground=nullptr;wc.lpszClassName=L"UniversalDLSS5.Controller";RegisterClassExW(&wc);HWND h=CreateWindowExW(0,wc.lpszClassName,L"Universal DLSS 5 - Neural Rendering Controller",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,1240,820,nullptr,nullptr,instance,nullptr);if(!h){if(SUCCEEDED(co))CoUninitialize();return 3;}ShowWindow(h,show);UpdateWindow(h);MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}if(SUCCEEDED(co))CoUninitialize();return(int)msg.wParam;}
+int runUi(HINSTANCE instance,int show,const std::wstring& launchExecutable){g.inst=instance;g.appDir=applicationDirectory();g.runtimePath=loadRuntimePathPreference(defaultRuntimeDirectory());SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT co=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(!g.shared.create()){if(SUCCEEDED(co))CoUninitialize();return 2;}WNDCLASSEXW wc{sizeof(wc)};wc.lpfnWndProc=windowProc;wc.hInstance=instance;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_APP_ICON));wc.hIconSm=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP_ICON),IMAGE_ICON,16,16,LR_DEFAULTCOLOR);wc.hbrBackground=nullptr;wc.lpszClassName=L"UniversalDLSS5.Controller";RegisterClassExW(&wc);HWND h=CreateWindowExW(0,wc.lpszClassName,L"Universal DLSS 5 - Neural Rendering Controller",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,1240,820,nullptr,nullptr,instance,nullptr);if(!h){if(SUCCEEDED(co))CoUninitialize();return 3;}ShowWindow(h,show);UpdateWindow(h);if(!launchExecutable.empty())launchAndAttach(launchExecutable);MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}if(SUCCEEDED(co))CoUninitialize();return(int)msg.wParam;}
 
 } // namespace udlss::controller

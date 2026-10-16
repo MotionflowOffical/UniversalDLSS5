@@ -18,16 +18,19 @@ struct D3D12RouteDecision {
 inline D3D12RouteDecision chooseD3D12Route(
     const PresentQueueProofState& proof,
     const D3D12RecoveryEvidence& recovery,
-    std::uint64_t nowMs) noexcept {
+    std::uint64_t nowMs, bool externalHost=false) noexcept {
     D3D12RouteDecision out{};
     const bool exact = proof.creationProven && presentQueueTrusted(proof,nowMs);
     if(exact) {
         out.trusted=true;
         out.exactCreationQueue=true;
-        out.synchronizeBeforePresent=false;
+        // An external host needs owned, shareable guide snapshots even when
+        // the presenting queue was captured at swapchain creation. Queue proof
+        // establishes ordering; it does not establish cross-device shareability.
+        out.synchronizeBeforePresent=externalHost;
         out.queueId=proof.trustedQueueId;
         out.confidence=100;
-        out.route=RendererRoute::NativeD3D12;
+        out.route=externalHost?RendererRoute::ModernD3D12Recovery:RendererRoute::NativeD3D12;
         return out;
     }
     if(d3d12RecoveryTrusted(recovery)) {
