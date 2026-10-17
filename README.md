@@ -4,7 +4,7 @@ Runtime SDK DLL imports use verification and atomic replacement. Graphics hooks,
 
 # UniversalDLSS5
 
-**Current version:** v0.5.0
+**Current version:** v0.5.1
 
 **Status:** Experimental Windows graphics injector/controller
 

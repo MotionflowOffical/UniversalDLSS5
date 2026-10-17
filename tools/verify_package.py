@@ -249,8 +249,8 @@ for token in ['refinementFeature', 'refinementScratch', 'ensureRefinementFeature
     if token not in host_source:
         fail(f'v0.4.4 NRHost refinement chain missing: {token}')
 
-if 'project(UniversalDLSS5 VERSION 0.5.0' not in cmake_root:
-    fail('CMake project version is not v0.5.0')
+if 'project(UniversalDLSS5 VERSION 0.5.1' not in cmake_root:
+    fail('CMake project version is not v0.5.1')
 build_script=(ROOT/'BUILD_WINDOWS.bat').read_text(encoding='utf-8',errors='ignore')
 if '-DUDLSS_WITH_STREAMLINE=ON' not in build_script:
     fail('x64 Windows build does not enable Streamline headers for the in-game feature-1004 mount')
@@ -401,7 +401,7 @@ for token in ['ownedColor12_', 'submitBackbufferCopy', 'CrashStage::PreCopy', 'C
         fail(f'v0.3.1 owned D3D12 color staging path missing: {token}')
 if 'CreateWrappedResource(bb.Get()' in on12:
     fail('v0.3.1 must not directly wrap the game swapchain backbuffer with D3D11On12')
-for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.5.0']:
+for token in ['AddVectoredExceptionHandler', 'crash stage:', 'UniversalDLSS5 v0.5.1']:
     if token not in attach_logger:
         fail(f'v0.3.1 crash-stage diagnostics missing: {token}')
 

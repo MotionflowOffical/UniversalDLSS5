@@ -31,7 +31,7 @@ using namespace udlss::neural::hostipc;
 
 namespace {
 constexpr const char* kHostProjectId="a4df2ee7-cd2a-47ba-9c83-1d7f7c0a5b51";
-constexpr const char* kHostEngineVersion="0.5.0";
+constexpr const char* kHostEngineVersion="0.5.1";
 constexpr NVSDK_NGX_Feature kFeature=NVSDK_NGX_Feature_Reserved18;
 constexpr unsigned long long kFallbackSnippetApplicationId=0x0876232Cull;
 constexpr const char* kWidth="DLSSNR.Width"; constexpr const char* kHeight="DLSSNR.Height";
