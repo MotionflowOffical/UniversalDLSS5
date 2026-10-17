@@ -1,3 +1,5 @@
+#include "udlss/host_feature_policy.hpp"
+#include "udlss/gpu_fence_wait.hpp"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -111,22 +113,68 @@ struct Host {
     udlss::neural::D3D12GpuTimer gpuTimer;
     Shared* shared{};HANDLE mapping{},frameEvent{},stopEvent{},doneEvent{},bridgeProcess{};std::wstring session;
     ComPtr<IDXGIAdapter1> adapter;ComPtr<ID3D12Device> device;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> list;ComPtr<ID3D12Fence> sharedFence;ComPtr<ID3D12Fence> localFence;HANDLE localEvent{};UINT64 localFenceValue{};
-    ComPtr<ID3D12Resource> color,output,motion,depth,controlMask,refinementScratch;LONG configSeen{};LONG frameSeen{};
+    ComPtr<ID3D12Resource> color,output,motion,depth,controlMask,refinementScratch;LONG configSeen{};LONG frameSeen{};HRESULT drainSignalResult{S_OK};
+    udlss::HostFeatureKey activeKey{};std::uint32_t importedGeneration{};ULONGLONG memorySampleTick{};
     NVSDK_NGX_Parameter* params{};NVSDK_NGX_Handle* feature{};NVSDK_NGX_Handle* refinementFeature{};bool coreInitialized{};bool reset{true};bool refinementUnavailable{};std::int32_t refinementFailureResult{};Route route{Route::None};
     HMODULE forwarder{},nvapiModule{};SnippetInitExtFn snInit{};SnippetPopulateFn snPopulate{};SnippetCreateFn snCreate{};SnippetEvaluateFn snEvaluate{};SnippetReleaseFn snRelease{};SnippetShutdownFn snShutdown{};bool snippetInitialized{};
     std::wstring architectureNote;
+    bool gpuDiagnostics{};
+    HRESULT dredSettingsResult{E_NOINTERFACE};
 
     ~Host(){shutdown();}
 
+    void prepareGpuDiagnostics(){
+        wchar_t enabled[8]{};
+        gpuDiagnostics=GetEnvironmentVariableW(L"UDLSS_NRHOST_DRED",enabled,_countof(enabled))==1&&enabled[0]==L'1';
+        if(!gpuDiagnostics)return;
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> settings;
+        dredSettingsResult=D3D12GetDebugInterface(IID_PPV_ARGS(&settings));
+        if(SUCCEEDED(dredSettingsResult)){
+            settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
+    }
+
+    void reportGpuFailure(HRESULT removed) noexcept try {
+        if(!gpuDiagnostics||!device)return;
+        FILE* report{};const auto path=logDir()/(L"gpu-fault-"+std::to_wstring(GetCurrentProcessId())+L".txt");
+        if(_wfopen_s(&report,path.c_str(),L"w, ccs=UTF-8")||!report)return;
+        fwprintf(report,L"NRHost GPU diagnostics\ndevice=0x%08X DRED settings=0x%08X\nseq=%ld config=%ld resources=%u size=%ux%u\nlocal=%llu/%llu shared=%llu in=%lld out=%lld\n",
+            (unsigned)removed,(unsigned)dredSettingsResult,shared->frameSeq,shared->configGeneration,shared->resourceGeneration,shared->width,shared->height,
+            localFence?localFence->GetCompletedValue():0,localFenceValue,sharedFence?sharedFence->GetCompletedValue():0,shared->inputFenceValue,shared->outputFenceValue);
+        ComPtr<ID3D12DeviceRemovedExtendedData1> dred;const auto query=device.As(&dred);
+        fwprintf(report,L"DRED interface=0x%08X\n",(unsigned)query);
+        if(SUCCEEDED(query)){
+            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs{};const auto crumbsResult=dred->GetAutoBreadcrumbsOutput1(&crumbs);
+            fwprintf(report,L"DRED breadcrumbs=0x%08X\n",(unsigned)crumbsResult);
+            unsigned nodes=0;
+            for(auto* node=crumbs.pHeadAutoBreadcrumbNode;SUCCEEDED(crumbsResult)&&node&&nodes++<64;node=node->pNext){
+                const auto last=node->pLastBreadcrumbValue?*node->pLastBreadcrumbValue:0;
+                fwprintf(report,L"list=%.256ls queue=%.256ls completed=%u/%u",
+                    node->pCommandListDebugNameW?node->pCommandListDebugNameW:L"(unnamed)",node->pCommandQueueDebugNameW?node->pCommandQueueDebugNameW:L"(unnamed)",last,node->BreadcrumbCount);
+                if(node->pCommandHistory&&last&&last<=node->BreadcrumbCount)fwprintf(report,L" previousOp=%u",(unsigned)node->pCommandHistory[(last-1)%65536]);
+                if(node->pCommandHistory&&last<node->BreadcrumbCount)fwprintf(report,L" nextOp=%u",(unsigned)node->pCommandHistory[last%65536]);
+                fwprintf(report,L"\n");
+            }
+            D3D12_DRED_PAGE_FAULT_OUTPUT1 fault{};const auto faultResult=dred->GetPageFaultAllocationOutput1(&fault);
+            fwprintf(report,L"DRED pageFault=0x%08X address=0x%llX\n",(unsigned)faultResult,fault.PageFaultVA);
+            auto allocations=[&](const wchar_t* label,const D3D12_DRED_ALLOCATION_NODE1* node){
+                unsigned count=0;for(;node&&count++<64;node=node->pNext)fwprintf(report,L"%ls type=%u object=%p name=%.256ls\n",label,(unsigned)node->AllocationType,node->pObject,node->ObjectNameW?node->ObjectNameW:L"(unnamed)");
+            };
+            if(SUCCEEDED(faultResult)){allocations(L"existing",fault.pHeadExistingAllocationNode);allocations(L"recentlyFreed",fault.pHeadRecentFreedAllocationNode);}
+        }
+        fclose(report);
+    }catch(...){/* Diagnostics must never replace the original GPU failure. */}
+
     bool openSession(const std::wstring& name){session=name;mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name.c_str());if(!mapping)return false;shared=(Shared*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared));if(!shared||shared->magic!=kMagic||shared->abi!=kAbi)return false;mark(shared,PipelineStage::HostStarted);frameEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Frame").c_str());stopEvent=OpenEventW(SYNCHRONIZE,FALSE,(name+L".Stop").c_str());doneEvent=OpenEventW(SYNCHRONIZE|EVENT_MODIFY_STATE,FALSE,(name+L".Done").c_str());if(!frameEvent||!stopEvent||!doneEvent)return false;shared->hostPid=GetCurrentProcessId();bridgeProcess=OpenProcess(SYNCHRONIZE,FALSE,shared->bridgePid);mark(shared,PipelineStage::HostConnected);InterlockedExchange(&shared->state,(LONG)State::WaitingConfig);wcscpy_s(shared->message,L"External NR host waiting for GPU resource configuration");return true;}
 
-    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_HIGH;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue)))){q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;}if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;gpuTimer.initialize(device.Get(),queue.Get());mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
+    bool findAdapter(){ComPtr<IDXGIFactory6> f;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))return false;for(UINT i=0;;++i){ComPtr<IDXGIAdapter1>a;if(f->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d{};a->GetDesc1(&d);if(d.AdapterLuid.HighPart==shared->adapterHigh&&d.AdapterLuid.LowPart==shared->adapterLow){adapter=a;break;}}if(!adapter)return false;prepareGpuDiagnostics();if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return false;D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_HIGH;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue)))){q.Priority=D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;if(FAILED(device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue))))return false;}if(FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator))))return false;if(FAILED(device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list))))return false;list->Close();if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&localFence))))return false;localEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!localEvent)return false;gpuTimer.initialize(device.Get(),queue.Get());mark(shared,PipelineStage::NeuralD3D12Ready);return true;}
 
-    bool openTransferred(std::uint64_t wireHandle,REFIID iid,void** out,HRESULT& result){
+    bool openTransferred(std::uint64_t& wireHandle,REFIID iid,void** out,HRESULT& result){
         if(!wireHandle){result=E_INVALIDARG;return false;}
         HANDLE h=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(wireHandle));
         result=device->OpenSharedHandle(h,iid,out);
-        CloseHandle(h);
+        CloseHandle(h);wireHandle=0;
         return SUCCEEDED(result);
     }
 
@@ -173,7 +221,7 @@ struct Host {
     void fillCreate(){params->Set(kWidth,shared->width);params->Set(kHeight,shared->height);params->Set(kInputWidth,shared->width);params->Set(kInputHeight,shared->height);params->Set(kOutputWidth,shared->width);params->Set(kOutputHeight,shared->height);params->Set(kOutputWidth2,shared->width);params->Set(kOutputHeight2,shared->height);params->Set(kUpscaling,0u);params->Set(kScale,1.0f);params->Set(kScalingRatio,1.0f);params->Set(kScalingRatioCallback,(unsigned long long)(uintptr_t)&ratioCallback);params->Set(kPreset,shared->nrPreset);params->Set(NVSDK_NGX_Parameter_PerfQualityValue,(int)NVSDK_NGX_PerfQuality_Value_Balanced);params->Set(NVSDK_NGX_Parameter_Width,shared->width);params->Set(NVSDK_NGX_Parameter_Height,shared->height);params->Set(NVSDK_NGX_Parameter_CreationNodeMask,1u);params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask,1u);}
 
     bool beginList(){if(FAILED(allocator->Reset()))return false;return SUCCEEDED(list->Reset(allocator.Get(),nullptr));}
-    bool executeAndDrain(){if(FAILED(list->Close()))return false;ID3D12CommandList* l[]={list.Get()};queue->ExecuteCommandLists(1,l);UINT64 v=++localFenceValue;if(FAILED(queue->Signal(localFence.Get(),v)))return false;if(localFence->GetCompletedValue()<v){if(FAILED(localFence->SetEventOnCompletion(v,localEvent)))return false;WaitForSingleObject(localEvent,3000);}return true;}
+    bool executeAndDrain(){if(FAILED(list->Close()))return false;ID3D12CommandList* l[]={list.Get()};queue->ExecuteCommandLists(1,l);UINT64 v=++localFenceValue;if(FAILED(queue->Signal(localFence.Get(),v)))return false;return udlss::waitForGpuFenceValue(localFence.Get(),localEvent,v,3000);}
 
     bool tryCoreCreate(std::int32_t& result){if(!beginList())return false;fillCreate();NVSDK_NGX_Handle* h{};auto r=NVSDK_NGX_D3D12_CreateFeature(list.Get(),kFeature,params,&h);result=(int)r;if(NVSDK_NGX_FAILED(r)||!h){list->Close();return false;}feature=h;route=Route::CoreDispatch;InterlockedExchange(&shared->route,(LONG)route);mark(shared,PipelineStage::FeatureCreated);return executeAndDrain();}
 
@@ -247,11 +295,67 @@ struct Host {
         shared->refinementAvailable=1;shared->refinementFailureResult=0;return true;
     }
 
-    bool configure(){InterlockedExchange(&shared->state,(LONG)State::Configuring);releaseFeature();color.Reset();output.Reset();motion.Reset();depth.Reset();controlMask.Reset();refinementScratch.Reset();refinementUnavailable=false;refinementFailureResult=0;shared->nrPassesExecuted=0;shared->refinementAvailable=0;shared->refinementFailureResult=0;if(!device&&!findAdapter()){setMessage(shared,PipelineStage::HostRuntimeFailed,0,L"NRHost: could not create D3D12 device on the source adapter");return false;}HRESULT openHr=S_OK;if(!sharedFence){if(!openTransferred(shared->fenceHandle,IID_PPV_ARGS(&sharedFence),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated shared GPU fence handle");return false;}shared->fenceHandle=0;}
-        if(!openTransferred(shared->colorHandle,IID_PPV_ARGS(&color),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated color texture handle");return false;}shared->colorHandle=0;
-        if(!openTransferred(shared->outputHandle,IID_PPV_ARGS(&output),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated output texture handle");return false;}shared->outputHandle=0;
-        if(!openTransferred(shared->motionHandle,IID_PPV_ARGS(&motion),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated motion texture handle");return false;}shared->motionHandle=0;
-        if(!openTransferred(shared->depthHandle,IID_PPV_ARGS(&depth),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated depth texture handle");return false;}shared->depthHandle=0;if(!openTransferred(shared->controlMaskHandle,IID_PPV_ARGS(&controlMask),openHr)){setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open duplicated control-mask texture handle");return false;}shared->controlMaskHandle=0;mark(shared,PipelineStage::HostResourcesShared);removeArchitectureCompatibility();prepareArchitectureCompatibility();if(!coreInit())return false;std::int32_t coreResult=0;if(!tryCoreCreate(coreResult)){if(!loadSnippet(coreResult))return false;}shared->failureStage=(UINT)PipelineStage::None;shared->lastResult=1;wcscpy_s(shared->message,route==Route::CoreDispatch?L"NRHost ready: feature 18 created through standard NGX core dispatch":L"NRHost ready: feature 18 created through signed-snippet fallback");InterlockedExchange(&shared->state,(LONG)State::Ready);reset=true;return true;}
+    void refreshMemory(){
+        const auto now=GetTickCount64();if(memorySampleTick&&now-memorySampleTick<1000)return;memorySampleTick=now;
+        ComPtr<IDXGIAdapter3> a;if(FAILED(adapter.As(&a)))return;DXGI_QUERY_VIDEO_MEMORY_INFO local{},nonlocal{};
+        if(SUCCEEDED(a->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_LOCAL,&local))){
+            if(shared->localBudgetBytes&&shared->localBudgetBytes!=local.Budget)++shared->budgetChanges;
+            shared->localBudgetBytes=local.Budget;shared->localUsageBytes=local.CurrentUsage;
+        }
+        if(SUCCEEDED(a->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,&nonlocal)))shared->sharedUsageBytes=nonlocal.CurrentUsage;
+    }
+    void closeUnusedTransfers(){
+        if(!shared)return;std::uint64_t* handles[]={&shared->fenceHandle,&shared->colorHandle,&shared->outputHandle,&shared->motionHandle,&shared->depthHandle,&shared->controlMaskHandle};
+        for(auto* h:handles)if(*h){CloseHandle(reinterpret_cast<HANDLE>((uintptr_t)*h));*h=0;}
+    }
+    bool drainQueue(){
+        if(!queue||!localFence||!localEvent)return true;
+        const auto drain=++localFenceValue;
+        drainSignalResult=queue->Signal(localFence.Get(),drain);
+        return SUCCEEDED(drainSignalResult)&&udlss::waitForGpuFenceValue(localFence.Get(),localEvent,drain,5000);
+    }
+    bool configure(){
+        InterlockedExchange(&shared->state,(LONG)State::Configuring);
+        if(!device&&!findAdapter()){closeUnusedTransfers();setMessage(shared,PipelineStage::HostRuntimeFailed,0,L"NRHost: could not create D3D12 device");return false;}
+        // Retire queue references before replacing imports or releasing a
+        // feature. A CPU config event alone is not GPU completion proof.
+        if(!drainQueue()){
+            const auto removed=device?device->GetDeviceRemovedReason():E_FAIL;
+            reportGpuFailure(removed);
+            wchar_t detail[384]{};
+            swprintf_s(detail,L"NRHost config could not retire previous GPU work: local=%llu/%llu shared=%llu in=%lld out=%lld seq=%ld config=%ld signal=0x%08X device=0x%08X",
+                localFence?localFence->GetCompletedValue():0,localFenceValue,sharedFence?sharedFence->GetCompletedValue():0,
+                shared->inputFenceValue,shared->outputFenceValue,shared->frameSeq,shared->configGeneration,(unsigned)drainSignalResult,(unsigned)removed);
+            const auto result=FAILED(removed)?removed:(FAILED(drainSignalResult)?drainSignalResult:WAIT_TIMEOUT);
+            closeUnusedTransfers();setMessage(shared,PipelineStage::HostRuntimeFailed,(int)result,detail);return false;
+        }
+        const udlss::HostFeatureKey requested{shared->width,shared->height,shared->colorFormat,shared->nrPreset,shared->allowUnsupportedHardware};
+        const bool reuse=udlss::canReuseHostFeature(feature!=nullptr,activeKey,requested);
+        if(!reuse)releaseFeature();
+        HRESULT openHr=S_OK;
+        if(!sharedFence){if(!openTransferred(shared->fenceHandle,IID_PPV_ARGS(&sharedFence),openHr)){closeUnusedTransfers();setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not open shared GPU fence");return false;}shared->fenceHandle=0;}
+        if(importedGeneration!=shared->resourceGeneration){
+            ComPtr<ID3D12Resource> nextColor,nextOutput,nextMotion,nextDepth,nextControl;
+            if(!openTransferred(shared->colorHandle,IID_PPV_ARGS(&nextColor),openHr)||
+               !openTransferred(shared->outputHandle,IID_PPV_ARGS(&nextOutput),openHr)||
+               !openTransferred(shared->motionHandle,IID_PPV_ARGS(&nextMotion),openHr)||
+               !openTransferred(shared->depthHandle,IID_PPV_ARGS(&nextDepth),openHr)||
+               (shared->controlMaskHandle&&!openTransferred(shared->controlMaskHandle,IID_PPV_ARGS(&nextControl),openHr))){closeUnusedTransfers();setMessage(shared,PipelineStage::HostResourceShareFailed,(int)openHr,L"NRHost: could not import shared frame textures");return false;}
+            shared->colorHandle=shared->outputHandle=shared->motionHandle=shared->depthHandle=shared->controlMaskHandle=0;
+            color=nextColor;output=nextOutput;motion=nextMotion;depth=nextDepth;controlMask=nextControl;importedGeneration=shared->resourceGeneration;
+        }
+        mark(shared,PipelineStage::HostResourcesShared);
+        if(reuse){++shared->featureReuses;}
+        else{
+            removeArchitectureCompatibility();prepareArchitectureCompatibility();
+            if(!coreInit())return false;std::int32_t coreResult=0;
+            if(!tryCoreCreate(coreResult)&&!loadSnippet(coreResult))return false;
+            activeKey=requested;++shared->featureCreations;
+        }
+        refreshMemory();shared->failureStage=(UINT)PipelineStage::None;shared->lastResult=1;
+        wcscpy_s(shared->message,reuse?L"NRHost ready: retained compatible neural feature and rebound frame textures":L"NRHost ready: neural feature created");
+        InterlockedExchange(&shared->state,(LONG)State::Ready);reset=true;return true;
+    }
 
     static D3D12_RESOURCE_BARRIER tr(ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){D3D12_RESOURCE_BARRIER x{};x.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;x.Transition.pResource=r;x.Transition.StateBefore=a;x.Transition.StateAfter=b;x.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;return x;}
     void setFrameParams(ID3D12Resource* input,ID3D12Resource* target,bool resetHistory){
@@ -272,6 +376,7 @@ struct Host {
     bool recordFallbackCopy(){if(!beginList())return false;std::array<D3D12_RESOURCE_BARRIER,2>b={tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE),tr(output.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST)};list->ResourceBarrier(2,b.data());list->CopyResource(output.Get(),color.Get());b={tr(color.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON),tr(output.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON)};list->ResourceBarrier(2,b.data());return SUCCEEDED(list->Close());}
 
     void processFrame(){
+        refreshMemory();
         const LONG seq=InterlockedCompareExchange(&shared->frameSeq,0,0);
         if(seq<=frameSeen||!feature)return;
         frameSeen=seq;
@@ -292,9 +397,10 @@ struct Host {
                 tr(color.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 tr(motion.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 tr(depth.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-                tr(controlMask.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 tr(output.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
-            list->ResourceBarrier(5,b.data());
+            UINT inputBarriers=4;
+            if(controlMask)b[inputBarriers++]=tr(controlMask.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            list->ResourceBarrier(inputBarriers,b.data());
             D3D12_RESOURCE_STATES outputState=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
             D3D12_RESOURCE_STATES scratchState=D3D12_RESOURCE_STATE_COMMON;
             setFrameParams(color.Get(),output.Get(),reset||shared->frameReset);
@@ -324,7 +430,7 @@ struct Host {
                 }
 
                 std::array<D3D12_RESOURCE_BARRIER,8> finish{};UINT n=0;
-                auto add=[&](ID3D12Resource* res,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to){if(from==to)return;finish[n++]=tr(res,from,to);};
+                auto add=[&](ID3D12Resource* res,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to){if(!res||from==to)return;finish[n++]=tr(res,from,to);};
                 if(finalResource==refinementScratch.Get()){
                     add(refinementScratch.Get(),scratchState,D3D12_RESOURCE_STATE_COPY_SOURCE);scratchState=D3D12_RESOURCE_STATE_COPY_SOURCE;
                     add(output.Get(),outputState,D3D12_RESOURCE_STATE_COPY_DEST);outputState=D3D12_RESOURCE_STATE_COPY_DEST;
@@ -383,10 +489,10 @@ struct Host {
         if(shared){shared->refinementAvailable=0;shared->refinementFailureResult=0;shared->nrPassesExecuted=0;}
         route=Route::None;if(shared)InterlockedExchange(&shared->route,(LONG)Route::None);
     }
-    void shutdown(){if(shared)InterlockedExchange(&shared->state,(LONG)State::Stopping);releaseFeature();if(snippetInitialized&&snShutdown&&device)snShutdown(device.Get());snippetInitialized=false;if(forwarder){FreeLibrary(forwarder);forwarder=nullptr;}removeArchitectureCompatibility();if(params){NVSDK_NGX_D3D12_DestroyParameters(params);params=nullptr;}if(coreInitialized&&device)NVSDK_NGX_D3D12_Shutdown1(device.Get());coreInitialized=false;if(localEvent){CloseHandle(localEvent);localEvent=nullptr;}if(shared){UnmapViewOfFile(shared);shared=nullptr;}if(mapping){CloseHandle(mapping);mapping=nullptr;}if(frameEvent){CloseHandle(frameEvent);frameEvent=nullptr;}if(stopEvent){CloseHandle(stopEvent);stopEvent=nullptr;}if(doneEvent){CloseHandle(doneEvent);doneEvent=nullptr;}if(bridgeProcess){CloseHandle(bridgeProcess);bridgeProcess=nullptr;}}
+    void shutdown(){if(!drainQueue())ExitProcess(WAIT_TIMEOUT);closeUnusedTransfers();if(shared)InterlockedExchange(&shared->state,(LONG)State::Stopping);releaseFeature();if(snippetInitialized&&snShutdown&&device)snShutdown(device.Get());snippetInitialized=false;if(forwarder){FreeLibrary(forwarder);forwarder=nullptr;}removeArchitectureCompatibility();if(params){NVSDK_NGX_D3D12_DestroyParameters(params);params=nullptr;}if(coreInitialized&&device)NVSDK_NGX_D3D12_Shutdown1(device.Get());coreInitialized=false;if(localEvent){CloseHandle(localEvent);localEvent=nullptr;}if(shared){UnmapViewOfFile(shared);shared=nullptr;}if(mapping){CloseHandle(mapping);mapping=nullptr;}if(frameEvent){CloseHandle(frameEvent);frameEvent=nullptr;}if(stopEvent){CloseHandle(stopEvent);stopEvent=nullptr;}if(doneEvent){CloseHandle(doneEvent);doneEvent=nullptr;}if(bridgeProcess){CloseHandle(bridgeProcess);bridgeProcess=nullptr;}}
 };
 
 std::wstring sessionArg(){int argc=0;auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);std::wstring out;if(argv){for(int i=1;i+1<argc;++i)if(std::wstring(argv[i])==L"--session")out=argv[i+1];LocalFree(argv);}return out;}
 }
 
-int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS);SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);const auto session=sessionArg();if(session.empty())return 2;Host h;if(!h.openSession(session))return 3;while(true){HANDLE handles[3]={h.stopEvent,h.frameEvent,h.bridgeProcess};DWORD count=h.bridgeProcess?3:2;DWORD w=WaitForMultipleObjects(count,handles,FALSE,INFINITE);if(w==WAIT_OBJECT_0||w==WAIT_OBJECT_0+2||InterlockedCompareExchange(&h.shared->stopRequested,0,0))break;if(w!=WAIT_OBJECT_0+1)continue;LONG cfg=InterlockedCompareExchange(&h.shared->configGeneration,0,0);if(cfg!=h.configSeen){h.configSeen=cfg;if(!h.configure()){InterlockedExchange(&h.shared->state,(LONG)State::Error);continue;}}h.processFrame();}return 0;}
+int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS);SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);const auto session=sessionArg();if(session.empty())return 2;Host h;if(!h.openSession(session))return 3;while(true){HANDLE handles[3]={h.stopEvent,h.frameEvent,h.bridgeProcess};DWORD count=h.bridgeProcess?3:2;DWORD w=WaitForMultipleObjects(count,handles,FALSE,INFINITE);if(w==WAIT_OBJECT_0||w==WAIT_OBJECT_0+2||InterlockedCompareExchange(&h.shared->stopRequested,0,0))break;if(w!=WAIT_OBJECT_0+1)continue;LONG cfg=InterlockedCompareExchange(&h.shared->configGeneration,0,0);if(cfg!=h.configSeen){h.configSeen=cfg;if(!h.configure()){InterlockedExchange(&h.shared->state,(LONG)State::Error);continue;}}h.processFrame();}return 0;}

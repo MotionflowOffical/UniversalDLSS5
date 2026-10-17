@@ -1,5 +1,6 @@
 #pragma once
 #include "d3d11_pipeline.hpp"
+#include "d3d12_native_pipeline.hpp"
 #include "udlss/d3d12_backbuffer_policy.hpp"
 #include <d3d11on12.h>
 #include <d3d11_4.h>
@@ -68,6 +69,7 @@ private:
  HANDLE copyFenceEvent_{};
  std::uint64_t nextCopyFenceValue_{1};
  D3D11Pipeline pipeline_;
+ D3D12NativePipeline nativePipeline_;
  std::wstring moduleDir_;
  UINT width_{},height_{};
  DXGI_FORMAT format_{DXGI_FORMAT_UNKNOWN};

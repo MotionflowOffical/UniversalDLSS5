@@ -41,14 +41,19 @@ const wchar_t* sourceName(GameGuideSource s){
 D3D11GuideExtractor::~D3D11GuideExtractor(){if(adapter_)FreeLibrary((HMODULE)adapter_);}
 bool D3D11GuideExtractor::initialize(ID3D11Device* d,ID3D11DeviceContext* c){device_=d;context_=c;return device_&&context_;}
 void D3D11GuideExtractor::tryLoadAdapter(){
-    if(adapter_||getFrame_||adapterProbeAttempted_)return;
+    if(adapter_||getFrame_||getFrame2_||adapterProbeAttempted_)return;
     adapterProbeAttempted_=true;
+    auto main=GetModuleHandleW(nullptr);
+    getFrame2_=reinterpret_cast<GameGuidesGetFrameV2>(GetProcAddress(main,kGameGuidesExportV2));
+    getFrame_=reinterpret_cast<GameGuidesGetFrameV1>(GetProcAddress(main,kGameGuidesExportV1));
+    if(getFrame2_||getFrame_)return;
     const auto dir=gameDir();if(dir.empty())return;
     const auto path=fs::path(dir)/L"UniversalDLSS5.GameGuides.dll";
     std::error_code ec;if(!fs::is_regular_file(path,ec))return;
     HMODULE m=LoadLibraryW(path.c_str());if(!m)return;
     auto fn=reinterpret_cast<GameGuidesGetFrameV1>(GetProcAddress(m,kGameGuidesExportV1));
-    if(!fn){FreeLibrary(m);return;}adapter_=m;getFrame_=fn;
+    auto fn2=reinterpret_cast<GameGuidesGetFrameV2>(GetProcAddress(m,kGameGuidesExportV2));
+    if(!fn&&!fn2){FreeLibrary(m);return;}adapter_=m;getFrame_=fn;getFrame2_=fn2;
 }
 bool D3D11GuideExtractor::adoptDepth(ID3D11Texture2D* t,DXGI_FORMAT view,UINT w,UINT h,GuideProbeResult& out){
     if(!t)return false;D3D11_TEXTURE2D_DESC d{};t->GetDesc(&d);DXGI_FORMAT rf{},sf{};
@@ -61,7 +66,10 @@ void D3D11GuideExtractor::probe(ID3D11Texture2D* backbuffer,const Settings& sett
 
     // Highest-priority explicit adapter. It can supply proprietary engine
     // conventions that a generic tracker cannot infer safely.
-    if(settings.loadGameGuideAdapter){tryLoadAdapter();if(getFrame_){GameGuideFrameV1 raw{};if(getFrame_(device_.Get(),context_.Get(),backbuffer,&raw)&&raw.abi==kGameGuidesAbiV1&&raw.size>=sizeof(GameGuideFrameV1)){
+    if(settings.loadGameGuideAdapter){tryLoadAdapter();if(getFrame_||getFrame2_){GameGuideFrameV1 raw{};bool valid=false;
+        if(getFrame2_){GameGuideFrameV2 v2{};valid=getFrame2_(device_.Get(),context_.Get(),backbuffer,&v2)&&v2.abi==2&&v2.size>=sizeof(v2);raw=v2.resources;if(valid)out.temporal=v2.temporal;}
+        else valid=getFrame_(device_.Get(),context_.Get(),backbuffer,&raw);
+        if(valid&&raw.abi==kGameGuidesAbiV1&&raw.size>=sizeof(GameGuideFrameV1)){
         auto take=[&](void* p,ComPtr<ID3D11Texture2D>& dst){if(p)dst.Attach(static_cast<ID3D11Texture2D*>(p));};
         take(raw.depthTexture,out.depth);take(raw.motionTexture,out.motion);take(raw.controlMaskTexture,out.controlMask);take(raw.normalsTexture,out.normals);take(raw.albedoTexture,out.albedo);
         out.depthViewFormat=(DXGI_FORMAT)raw.depthFormat;out.depthConventionKnown=(raw.flags&GameGuide_DepthConventionKnown)!=0;if(out.depthConventionKnown)out.depthInverted=(raw.flags&GameGuide_DepthInverted)!=0;out.cameraCut=(raw.flags&GameGuide_CameraCut)!=0;out.motionConventionValid=(raw.flags&GameGuide_MotionPixelCurrentToPrevious)!=0;out.motionEncoding=NativeMotionEncoding::PixelCurrentToPrevious;out.controlMaskConventionValid=(raw.flags&GameGuide_ControlMaskIsNrApplication)!=0;out.motionScaleX=raw.motionScaleX;out.motionScaleY=raw.motionScaleY;out.fromAdapter=true;out.source=GameGuideSource::GameAdapter;out.provider=raw.providerName[0]?raw.providerName:L"UniversalDLSS5.GameGuides.dll";out.motionConfidence=100;out.depthConfidence=100;
@@ -72,7 +80,9 @@ void D3D11GuideExtractor::probe(ID3D11Texture2D* backbuffer,const Settings& sett
     // Capture exact resources already supplied by the game to DLSS/Streamline.
     // This is preferred over heuristic resource tracking.
     const auto captured=snapshotGameTemporalGuides(device_.Get(),GetTickCount64());
-    if(captured){
+    if(captured&&(!(out.depth||out.motion)||temporalFramesMatch(out.temporal,captured.temporal))){
+        const bool hadLocal=out.depth||out.motion;const auto oldDepth=out.depth.Get();const auto oldMotion=out.motion.Get();
+        if(!hadLocal)out.temporal=captured.temporal;
         if(!out.depth && settings.useGameDepth && captured.depth11 && adoptDepth(captured.depth11.Get(),captured.depthFormat,bb.Width,bb.Height,out)){
             out.depthInverted=captured.depthInverted;out.depthConventionKnown=captured.depthConventionKnown;out.depthConfidence=captured.confidence;
             out.source=captured.source;out.provider=captured.provider.empty()?sourceName(captured.source):captured.provider;
@@ -82,6 +92,7 @@ void D3D11GuideExtractor::probe(ID3D11Texture2D* backbuffer,const Settings& sett
             out.motionScaleX=captured.motionToPixelScaleX;out.motionScaleY=captured.motionToPixelScaleY;out.motionWidth=captured.motionWidth;out.motionHeight=captured.motionHeight;out.motionConfidence=captured.confidence;
             out.source=captured.source;out.provider=captured.provider.empty()?sourceName(captured.source):captured.provider;
         }
+        if(hadLocal&&(oldDepth!=out.depth.Get()||oldMotion!=out.motion.Get())&&!(out.temporal.flags&captured.temporal.flags&Temporal_SourceFrameKnown))invalidateUnmatchedTemporalMetadata(out.temporal);
         out.cameraCut=out.cameraCut||captured.cameraCut;
     }
 

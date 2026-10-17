@@ -2,6 +2,7 @@
 #include <wrl/client.h>
 #include "../src/neural/external_host_wait.hpp"
 #include "../src/neural/d3d12_gpu_timer.hpp"
+#include "udlss/gpu_fence_wait.hpp"
 #include <iostream>
 #include <thread>
 using Microsoft::WRL::ComPtr;
@@ -9,6 +10,15 @@ int main(){
     ComPtr<ID3D12Device> device;
     if(FAILED(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device))))return 77;
     bool ok=true;
+    {
+        ComPtr<ID3D12Fence> f;device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f));
+        auto e=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        if(udlss::waitForGpuFenceValue(f.Get(),e,1,1)){std::cerr<<"Unsignaled fence accepted\n";ok=false;}
+        f->Signal(1); // The old timed-out registration now leaves a stale wake.
+        if(udlss::waitForGpuFenceValue(f.Get(),e,2,5)){std::cerr<<"Stale wake retired a newer fence target\n";ok=false;}
+        f->Signal(2);if(!udlss::waitForGpuFenceValue(f.Get(),e,2,5)){std::cerr<<"Completed fence rejected\n";ok=false;}
+        CloseHandle(e);
+    }
     for(int scenario=0;scenario<4;++scenario){
         ComPtr<ID3D12Fence> fence;
         if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence))))return 1;

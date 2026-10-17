@@ -89,7 +89,7 @@ std::vector<ProcessInfo> enumerateProcesses(){
     const auto visible=visibleTopLevelPids();
     std::vector<ProcessInfo> out; HANDLE s=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0); if(s==INVALID_HANDLE_VALUE)return out; PROCESSENTRY32W e{sizeof(e)};
     if(Process32FirstW(s,&e)){do{
-        if(e.th32ProcessID<=4 || e.th32ProcessID==GetCurrentProcessId()) continue;
+        if(e.th32ProcessID<=4 || e.th32ProcessID==GetCurrentProcessId() || isBridgeInfrastructureProcess(e.szExeFile)) continue;
         ProcessInfo i{};i.pid=e.th32ProcessID;i.parentPid=e.th32ParentProcessID;i.name=e.szExeFile;i.visibleTopLevel=visible.contains(i.pid);
         HANDLE p=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_VM_READ,FALSE,i.pid); if(p){
             i.accessible=true;i.arch=processArch(p);

@@ -23,8 +23,9 @@ float3 Bt2020To709(float3 c){
                  -0.018154*c.r-0.100597*c.g+1.118751*c.b);
 }
 float3 HdrToProxy(float3 scRgb){
-    float3 positive=max(scRgb,0.0);float l=max(dot(positive,float3(.2126,.7152,.0722)),1e-6);
-    float paper=max(HdrPaperWhite/80.0,0.25);float mapped=l/(l+paper);return saturate(positive*(mapped/l));
+    float3 positive=max(scRgb,0.0);float peak=max(positive.r,max(positive.g,positive.b));
+    // Max-channel compression preserves hue without clipping saturated colors.
+    return positive/(peak+max(HdrPaperWhite/80.0,0.25));
 }
 [numthreads(8,8,1)] void CSMain(uint3 id:SV_DispatchThreadID){
     if(id.x>=Width||id.y>=Height)return;

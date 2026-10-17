@@ -211,20 +211,29 @@ public:
         common.clipToPrevClip=identity();
         common.prevClipToClip=identity();
         common.jitterOffset=sl::float2(0,0);
+        if(frame.temporal.flags&Temporal_CameraKnown){
+            const auto&t=frame.temporal;
+            memcpy(&common.cameraViewToClip,t.viewToClip.data(),64);memcpy(&common.clipToCameraView,t.clipToView.data(),64);
+            memcpy(&common.clipToPrevClip,t.clipToPrevious.data(),64);memcpy(&common.prevClipToClip,t.previousToClip.data(),64);
+            memcpy(&common.cameraPos,t.cameraPosition.data(),12);memcpy(&common.cameraUp,t.cameraUp.data(),12);memcpy(&common.cameraRight,t.cameraRight.data(),12);memcpy(&common.cameraFwd,t.cameraForward.data(),12);
+            common.cameraNear=t.nearPlane;common.cameraFar=t.farPlane;common.cameraFOV=t.fov;common.cameraAspectRatio=t.aspect;
+        }
+        if(frame.temporal.flags&Temporal_JitterKnown){
+            const auto&t=frame.temporal;common.jitterOffset=sl::float2(t.jitterX*frame.width/std::max(1u,t.renderWidth),t.jitterY*frame.height/std::max(1u,t.renderHeight));
+        }
         // Our vectors are already current->previous in pixel units. SL's common scale converts the pixel field to normalized screen units.
         common.mvecScale=sl::float2(frame.motionScaleX/std::max(1.0f,(float)frame.width),frame.motionScaleY/std::max(1.0f,(float)frame.height));
-        common.cameraPinholeOffset=sl::float2(0,0);
-        common.cameraPos=sl::float3(0,0,0); common.cameraUp=sl::float3(0,1,0);
-        common.cameraRight=sl::float3(1,0,0); common.cameraFwd=sl::float3(0,0,1);
-        common.cameraNear=0.0f; common.cameraFar=1.0f; common.cameraFOV=1.0f;
-        common.cameraAspectRatio=(float)frame.width/(float)std::max(1u,frame.height);
+        if(!(frame.temporal.flags&Temporal_CameraKnown)){
+            common.cameraPos=sl::float3(0,0,0);common.cameraUp=sl::float3(0,1,0);common.cameraRight=sl::float3(1,0,0);common.cameraFwd=sl::float3(0,0,1);
+            common.cameraNear=0;common.cameraFar=1;common.cameraFOV=1;common.cameraAspectRatio=(float)frame.width/std::max(1u,frame.height);
+        }
         common.depthInverted=frame.depthInverted?sl::Boolean::eTrue:sl::Boolean::eFalse;
         common.cameraMotionIncluded=sl::Boolean::eTrue;
         common.motionVectors3D=sl::Boolean::eFalse;
         common.reset=(reset_||frame.resetHistory)?sl::Boolean::eTrue:sl::Boolean::eFalse;
         common.orthographicProjection=sl::Boolean::eFalse;
         common.motionVectorsDilated=sl::Boolean::eTrue;
-        common.motionVectorsJittered=sl::Boolean::eFalse;
+        common.motionVectorsJittered=(frame.temporal.flags&Temporal_MotionJittered)?sl::Boolean::eTrue:sl::Boolean::eFalse;
         const sl::ViewportHandle viewport{1};
         result=constants_(common,*frameToken,viewport);
         if(result!=sl::Result::eOk) {

@@ -11,6 +11,9 @@ cbuffer NativeMotionParams : register(b0)
     float InputToPixelScaleX;
     float InputToPixelScaleY;
     float Padding;
+    float JitterDeltaX;
+    float JitterDeltaY;
+    float2 Reserved;
 };
 Texture2D<float4> NativeMotion : register(t0);
 RWTexture2D<float2> MotionOut : register(u0);
@@ -31,6 +34,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         sourcePixels=raw*float2(InputToPixelScaleX,InputToPixelScaleY);
     float2 v=sourcePixels*float2((float)Width/(float)sw,(float)Height/(float)sh)*MotionScale;
     if(InvertY!=0) v.y=-v.y;
+    v+=float2(JitterDeltaX,JitterDeltaY);
     if(any(isnan(v)) || any(isinf(v)) || any(abs(v)>32768.0)) v=0.0;
     MotionOut[id.xy]=v;
 }

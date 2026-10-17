@@ -142,18 +142,20 @@ bool D3D12On12Pipeline::initialize(ID3D12CommandQueue*q,const std::wstring&dir,R
     }
     if(!ensureCopyInfrastructure(st))return false;
     pipeline_.setForceExternalHost(recoveryMode_);
+    pipeline_.setExternalHostD3D12(d12_.Get(),queue_.Get());
     if(!recoveryMode_)pipeline_.setNativeD3D12(d12_.Get(),queue_.Get());
     return pipeline_.initialize(d11_.Get(),ctx_.Get(),dir,st);
 }
 
 void D3D12On12Pipeline::reset(){
+    nativePipeline_.reset();
     if(copyFence_&&copyFenceEvent_){const auto pending=std::max({preCopy_.fenceValue,postCopy_.fenceValue,guideCopy_.fenceValue});if(pending&&copyFence_->GetCompletedValue()<pending&&SUCCEEDED(copyFence_->SetEventOnCompletion(pending,copyFenceEvent_)))WaitForSingleObject(copyFenceEvent_,5000);}
     pipeline_.reset();ownedColor11_.Reset();ownedColor12_.Reset();
     recoveryDepthGuide_.texture11.Reset();recoveryDepthGuide_.resource12.Reset();recoveryDepthGuide_={};
     recoveryMotionGuide_.texture11.Reset();recoveryMotionGuide_.resource12.Reset();recoveryMotionGuide_={};
     width_=height_=0;format_=DXGI_FORMAT_UNKNOWN;preCopy_.fenceValue=postCopy_.fenceValue=guideCopy_.fenceValue=0;recoveryD11PendingValue_=0;
 }
-void D3D12On12Pipeline::retryNeural(){pipeline_.retryNeural();}
+void D3D12On12Pipeline::retryNeural(){pipeline_.retryNeural();nativePipeline_.retryNeural();}
 
 bool D3D12On12Pipeline::waitCopyContext(CopyContext& c,RuntimeStatus& st){
     if(!c.fenceValue||copyFence_->GetCompletedValue()>=c.fenceValue)return true;
@@ -338,6 +340,23 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
     const UINT i=s3->GetCurrentBackBufferIndex();
     ComPtr<ID3D12Resource> bb;if(FAILED(swap->GetBuffer(i,IID_PPV_ARGS(&bb))))return false;
     const auto desc=bb->GetDesc();
+    nativePipeline_.releaseObsoleteHost(s,runtime);
+    const auto nativeCapture=snapshotGameTemporalGuides(d12_.Get(),GetTickCount64());
+    if(nativePipeline_.eligible(desc,nativeCapture,s)){
+        GameGuideCaptureGuard guard;
+        auto sharedHost=pipeline_.externalHostForNative(s,runtime,st);
+        if(!sharedHost)return false;
+        const bool processed=nativePipeline_.process(d12_.Get(),queue_.Get(),bb.Get(),nativeCapture,s,runtime,moduleDir_,st,colorContext,sharedHost);
+        if(processed){
+            // Eligibility requires immutable injector-owned snapshots. Retain
+            // this rendered-frame generation across additional/FG Presents,
+            // exactly as in recovery. Replacement or expiry retires its slot.
+            pipeline_.suspendForNative();
+            ownedColor11_.Reset();ownedColor12_.Reset();recoveryDepthGuide_={};recoveryMotionGuide_={};width_=height_=0;format_=DXGI_FORMAT_UNKNOWN;
+        }
+        return processed;
+    }
+    nativePipeline_.invalidateHistory();
     if(recoveryMode_ && recoveryD11PendingValue_ && recoveryD11Fence_ && recoveryD11Fence_->GetCompletedValue()<recoveryD11PendingValue_){
         st.failureStage=PipelineStage::None;st.neuralActive=0;
         wcscpy_s(st.message,L"Recovery D3D11 frame still in flight; bypassing this frame safely");
@@ -384,7 +403,7 @@ bool D3D12On12Pipeline::process(IDXGISwapChain*swap,const Settings&s,const std::
     const bool recoveryGuideQueueSafe=recoveryGuideUsable(recoveryMode_,captured.snapshotOwned,captured.snapshotOwned,
                                                           captured.validUntilPresent,captured.producerQueueId,recoveryQueueId_);
     if(capturedPresentSafe && recoveryGuideQueueSafe){
-        externalGuide.source=captured.source;externalGuide.provider=captured.provider;externalGuide.cameraCut=captured.cameraCut;
+        externalGuide.temporal=captured.temporal;externalGuide.source=captured.source;externalGuide.provider=captured.provider;externalGuide.cameraCut=captured.cameraCut;
         if(recoveryMode_){
             // Recovery never hands a game-owned resource to D3D11/NRHost.
             // Streamline Present-safe resources and volatile injector-owned snapshots are copied on the proven

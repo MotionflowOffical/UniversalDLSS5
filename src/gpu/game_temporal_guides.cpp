@@ -1,4 +1,5 @@
 #include "game_temporal_guides.hpp"
+#include "udlss/snapshot_promotion.hpp"
 #include "shared_guide_texture.hpp"
 #include "udlss/provider_snapshot_policy.hpp"
 #include "../bridge/hook_lifecycle.hpp"
@@ -67,6 +68,7 @@ std::atomic_uint64_t g_ownedSnapshotPromotions{0};
 std::atomic_uint64_t g_ownedSnapshotReads{0};
 
 struct PendingProviderGuides {
+    TemporalFrame temporal{};
     GameGuideSource source{GameGuideSource::None};
     std::wstring provider;
     ComPtr<ID3D12Resource> depth;
@@ -94,6 +96,7 @@ struct PendingProviderGuides {
 std::unordered_map<std::uintptr_t,PendingProviderGuides> g_pendingProviders;
 
 struct PostSubmitSnapshotSlot {
+    std::shared_ptr<int> lease{std::make_shared<int>()};
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12Resource> depth;
@@ -160,6 +163,7 @@ void mergeSameProviderFieldsLocked(CapturedGameGuides& incoming){
     // one of its textures. Provider components are merged before snapshotting by
     // command-list identity instead.
     if(incoming.snapshotOwned||g_capture.snapshotOwned)return;
+    if(!temporalFramesMatch(incoming.temporal,g_capture.temporal))return;
     if(!g_capture||incoming.source!=g_capture.source||incoming.providerViewportId!=g_capture.providerViewportId||!guideCaptureFresh(g_capture.capturedTickMs,incoming.capturedTickMs,100))return;
     if(!incoming.depth11&&!incoming.depth12){
         incoming.depth11=g_capture.depth11;incoming.depth12=g_capture.depth12;incoming.depthFormat=g_capture.depthFormat;
@@ -197,11 +201,10 @@ void promoteCompletedSnapshotsLocked(){
     for(auto& [_,queue]:g_postSubmitQueues){
         if(!queue.fence)continue;
         const auto completed=queue.fence->GetCompletedValue();
-        for(auto& slot:queue.slots){
-            if(slot.captureConsumed||!slot.fenceValue||slot.fenceValue==UINT64_MAX||completed<slot.fenceValue||!slot.stagedCapture)continue;
-            if(g_capture.captureSequence==slot.stagedCapture.captureSequence)continue;
-            publishCaptureLocked(slot.stagedCapture,true);
-        }
+        promoteCompletedSnapshotSlots(queue.slots,completed,
+            []{return g_capture.captureSequence;},
+            [](CapturedGameGuides capture){return publishCaptureLocked(std::move(capture),true);},
+            [](std::uint64_t sequence){markSnapshotCaptureConsumedLocked(sequence);});
     }
 }
 
@@ -264,12 +267,13 @@ bool queuePendingProviderGuides(PendingProviderGuides incoming){
     std::scoped_lock lock(g_mutex);
     pruneStalePendingProvidersLocked(incoming.capturedTickMs);
     auto& dst=g_pendingProviders[incoming.providerCommandListId];
-    const bool sameGeneration=dst&&dst.source==incoming.source&&dst.providerViewportId==incoming.providerViewportId&&guideCaptureFresh(dst.capturedTickMs,incoming.capturedTickMs,250);
+    const bool sameGeneration=dst&&temporalFramesMatch(dst.temporal,incoming.temporal)&&dst.source==incoming.source&&dst.providerViewportId==incoming.providerViewportId&&guideCaptureFresh(dst.capturedTickMs,incoming.capturedTickMs,250);
     if(!sameGeneration){dst=std::move(incoming);return true;}
     const bool incomingPreferred=guideSourcePriority(incoming.source)>=guideSourcePriority(dst.source);
     dst.capturedTickMs=std::max(dst.capturedTickMs,incoming.capturedTickMs);
     dst.confidence=std::max(dst.confidence,incoming.confidence);
     dst.cameraCut=dst.cameraCut||incoming.cameraCut;
+    if(incoming.temporal.flags)dst.temporal=incoming.temporal;
     if(incoming.depth&&(incomingPreferred||!dst.depth)){
         dst.depth=incoming.depth;dst.depthDesc=incoming.depthDesc;dst.depthState=incoming.depthState;dst.depthFormat=incoming.depthFormat;
         dst.depthWidth=incoming.depthWidth;dst.depthHeight=incoming.depthHeight;dst.depthInverted=incoming.depthInverted;
@@ -290,7 +294,7 @@ PendingProviderGuides pendingFromCapturedStreamline(const CapturedGameGuides& c,
     pending.source=GameGuideSource::Streamline;pending.provider=L"Streamline game tags";pending.capturedTickMs=c.capturedTickMs;
     pending.providerCommandListId=commandListId;pending.providerViewportId=c.providerViewportId;pending.confidence=c.confidence;pending.depthInverted=c.depthInverted;
     pending.depthConventionKnown=c.depthConventionKnown;pending.motionConventionKnown=c.motionConventionKnown;
-    pending.motionToPixelScaleX=c.motionToPixelScaleX;pending.motionToPixelScaleY=c.motionToPixelScaleY;pending.cameraCut=c.cameraCut;
+    pending.motionToPixelScaleX=c.motionToPixelScaleX;pending.motionToPixelScaleY=c.motionToPixelScaleY;pending.cameraCut=c.cameraCut;pending.temporal=c.temporal;
     if(c.depth12){pending.depth=c.depth12;pending.depthDesc=c.depth12->GetDesc();pending.depthState=c.depthState;pending.depthFormat=c.depthFormat;pending.depthWidth=c.depthWidth;pending.depthHeight=c.depthHeight;}
     if(c.motion12){pending.motion=c.motion12;pending.motionDesc=c.motion12->GetDesc();pending.motionState=c.motionState;pending.motionFormat=c.motionFormat;pending.motionWidth=c.motionWidth;pending.motionHeight=c.motionHeight;}
     return pending;
@@ -307,6 +311,7 @@ std::array<void*,kMaxSlHookTargets> g_slSetTagTargets{};
 std::array<void*,kMaxSlHookTargets> g_slSetConstantsTargets{};
 std::array<void*,kMaxSlHookTargets> g_slEvaluateTargets{};
 struct SlConstantsSnapshot {
+    TemporalFrame temporal{};
     float sx{1},sy{1};
     bool depthInverted{true},depthKnown{},reset{};
     std::uint32_t renderWidth{},renderHeight{};
@@ -328,7 +333,7 @@ void noteSlResourceTag(const sl::ResourceTag& tag){
     if(!tag.resource||!tag.resource->native)g_slNullResourceTags.fetch_add(1,std::memory_order_relaxed);
 }
 
-void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuffer* cmd,std::uint32_t viewportId){
+void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuffer* cmd,std::uint32_t viewportId,const sl::FrameToken* frame=nullptr){
     if(g_suppressed||!g_captureEnabled.load(std::memory_order_relaxed)||!tag.resource||!tag.resource->native)return;
     // DLSS motion-vector scale is defined relative to the render/input-color extent,
     // not necessarily the motion-texture extent. Keep that extent per viewport so
@@ -345,7 +350,13 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuf
     }
     if(tag.type!=sl::kBufferTypeDepth && tag.type!=sl::kBufferTypeMotionVectors)return;
     const auto mode=g_captureMode.load(std::memory_order_relaxed);
-    const auto constants=slConstantsForViewport(viewportId);
+    auto constants=slConstantsForViewport(viewportId);
+    const bool matchingConstants=!frame || !(constants.temporal.flags&Temporal_SourceFrameKnown) || constants.temporal.sourceFrame==static_cast<std::uint32_t>(*frame);
+    if(!matchingConstants){constants={};}
+    TemporalFrame temporal=constants.temporal;temporal.viewport=viewportId;
+    if(frame){temporal.sourceFrame=static_cast<std::uint32_t>(*frame);temporal.flags|=Temporal_SourceFrameKnown;}
+    temporal.renderWidth=constants.renderWidth;temporal.renderHeight=constants.renderHeight;
+    temporal.cropX=tag.extent.left;temporal.cropY=tag.extent.top;
     if(mode==GameTemporalGuideCaptureMode::Disabled)return;
     const bool providerPresentSafe=tag.lifecycle==sl::eValidUntilPresent;
     const bool volatileLifecycle=tag.lifecycle==sl::eOnlyValidNow || tag.lifecycle==sl::eValidUntilEvaluate;
@@ -375,7 +386,7 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuf
             const bool constantsFresh=streamlineConventionFresh(constantsAge);
             const bool resetFresh=streamlineResetFresh(constantsAge);
             if(constantsFresh){pending.depthInverted=constants.depthInverted;pending.depthConventionKnown=constants.depthKnown;}
-            pending.cameraCut=resetFresh&&constants.reset;
+            pending.cameraCut=resetFresh&&constants.reset;pending.temporal=temporal;
             const auto state=static_cast<D3D12_RESOURCE_STATES>(tag.resource->state);
             if(tag.type==sl::kBufferTypeDepth){
                 pending.depth=t12;pending.depthDesc=t12->GetDesc();pending.depthState=state;pending.depthFormat=fmt;pending.depthWidth=w;pending.depthHeight=h;
@@ -399,7 +410,7 @@ void captureSlTag(const sl::ResourceTag& tag,bool localEvaluation,sl::CommandBuf
         // subject to provider/recovery queue matching at consumption time.
     }
 
-    CapturedGameGuides c{};c.source=GameGuideSource::Streamline;c.provider=L"Streamline game tags";c.capturedTickMs=now;c.providerViewportId=viewportId;
+    CapturedGameGuides c{};c.temporal=temporal;c.source=GameGuideSource::Streamline;c.provider=L"Streamline game tags";c.capturedTickMs=now;c.providerViewportId=viewportId;
     c.validUntilPresent=providerPresentSafe;c.confidence=c.validUntilPresent?100u:(localEvaluation?94u:82u);
     if(SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&t11)))){
         DXGI_FORMAT fmt{};std::uint32_t w{},h{};describe11(t11.Get(),fmt,w,h);if(nativeFormat!=DXGI_FORMAT_UNKNOWN)fmt=nativeFormat;if(extent.width&&extent.height){w=extent.width;h=extent.height;}
@@ -434,7 +445,7 @@ template<std::size_t Slot>
 sl::Result hkSlSetTagForFrame(const sl::FrameToken& frame,const sl::ViewportHandle& viewport,const sl::ResourceTag* tags,uint32_t count,sl::CommandBuffer* cmd){
     g_streamlineHookHits.fetch_add(1,std::memory_order_relaxed);g_slSetTagForFrameCalls.fetch_add(1,std::memory_order_relaxed);
     udlss::bridge::HookCallScope call;
-    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++){noteSlResourceTag(tags[i]);captureSlTag(tags[i],false,cmd,(std::uint32_t)viewport);}
+    if(call.customWorkAllowed()&&!g_suppressed&&tags)for(uint32_t i=0;i<count;i++){noteSlResourceTag(tags[i]);captureSlTag(tags[i],false,cmd,(std::uint32_t)viewport,&frame);}
     return g_origSlSetTagForFrameTargets[Slot](frame,viewport,tags,count,cmd);
 }
 template<std::size_t Slot>
@@ -450,7 +461,23 @@ sl::Result hkSlSetConstants(const sl::Constants& values,const sl::FrameToken& fr
     udlss::bridge::HookCallScope call;
     if(call.customWorkAllowed()&&!g_suppressed){
         std::scoped_lock lock(g_mutex);const auto now=GetTickCount64();const auto id=(std::uint32_t)viewport;
-        auto update=[&](SlConstantsSnapshot& c){c.sx=values.mvecScale.x;c.sy=values.mvecScale.y;c.depthKnown=values.depthInverted!=sl::Boolean::eInvalid;c.depthInverted=values.depthInverted==sl::Boolean::eTrue;c.reset=values.reset==sl::Boolean::eTrue;c.tick=now;};
+        auto update=[&](SlConstantsSnapshot& c){c.sx=values.mvecScale.x;c.sy=values.mvecScale.y;c.depthKnown=values.depthInverted!=sl::Boolean::eInvalid;c.depthInverted=values.depthInverted==sl::Boolean::eTrue;c.reset=values.reset==sl::Boolean::eTrue;c.tick=now;
+            auto& t=c.temporal;t.sourceFrame=static_cast<std::uint32_t>(frame);t.viewport=id;
+            t.flags=Temporal_SourceFrameKnown|Temporal_JitterKnown;
+            if(c.reset)t.flags|=Temporal_CameraCut;
+            if(values.motionVectorsJittered==sl::Boolean::eTrue)t.flags|=Temporal_MotionJittered;
+            t.jitterX=values.jitterOffset.x;t.jitterY=values.jitterOffset.y;
+            memcpy(t.viewToClip.data(),&values.cameraViewToClip,64);memcpy(t.clipToView.data(),&values.clipToCameraView,64);
+            memcpy(t.clipToPrevious.data(),&values.clipToPrevClip,64);memcpy(t.previousToClip.data(),&values.prevClipToClip,64);
+            memcpy(t.cameraPosition.data(),&values.cameraPos,12);memcpy(t.cameraUp.data(),&values.cameraUp,12);
+            memcpy(t.cameraRight.data(),&values.cameraRight,12);memcpy(t.cameraForward.data(),&values.cameraFwd,12);
+            t.nearPlane=values.cameraNear;t.farPlane=values.cameraFar;t.fov=values.cameraFOV;t.aspect=values.cameraAspectRatio;
+            bool finite=std::isfinite(t.jitterX)&&std::isfinite(t.jitterY);
+            for(auto v:t.viewToClip)finite=finite&&std::isfinite(v)&&std::abs(v)<1e20f;
+            for(auto v:t.clipToPrevious)finite=finite&&std::isfinite(v)&&std::abs(v)<1e20f;
+            if(finite&&std::isfinite(t.fov)&&t.fov>0&&t.fov<4)t.flags|=Temporal_CameraKnown;
+            if(!std::isfinite(t.jitterX)||!std::isfinite(t.jitterY))t.flags&=~Temporal_JitterKnown;
+        };
         update(g_slConstants);if(id)update(g_slConstantsByViewport[id]);
     }
     return g_origSlSetConstantsTargets[Slot](values,frame,viewport);
@@ -462,7 +489,7 @@ sl::Result hkSlEvaluateFeature(sl::Feature feature,const sl::FrameToken& frame,c
     if(call.customWorkAllowed()&&!g_suppressed){
         std::uint32_t evalViewport=0;
         if(inputs)for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ViewportHandle::s_structType){evalViewport=(std::uint32_t)*static_cast<const sl::ViewportHandle*>(base);break;}}
-        if(inputs)for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType){const auto& tag=*static_cast<const sl::ResourceTag*>(base);noteSlResourceTag(tag);captureSlTag(tag,true,cmd,evalViewport);}}
+        if(inputs)for(uint32_t i=0;i<count;i++){const auto* base=inputs[i];if(base&&base->structType==sl::ResourceTag::s_structType){const auto& tag=*static_cast<const sl::ResourceTag*>(base);noteSlResourceTag(tag);captureSlTag(tag,true,cmd,evalViewport,&frame);}}
         // Some Streamline games tag eValidUntilPresent resources with no command
         // buffer and supply the provider list only when the feature evaluates.
         // Bind only a recent unbound capture; never overwrite known provenance.
@@ -763,7 +790,7 @@ bool snapshotPendingGameTemporalGuidesAfterExecute(ID3D12CommandQueue* queue,ID3
             auto& candidate=qs.slots[i];
             const bool neverSubmitted=candidate.fenceValue==0;
             const bool gpuDone=candidate.fenceValue!=0&&candidate.fenceValue!=UINT64_MAX&&completed>=candidate.fenceValue;
-            if((neverSubmitted||gpuDone)&&candidate.captureConsumed){slotIndex=i;found=true;break;}
+            if((neverSubmitted||gpuDone)&&candidate.captureConsumed&&snapshotLeaseAvailable(candidate.lease)){slotIndex=i;found=true;break;}
         }
         if(!found)return false;
         auto& slot=qs.slots[slotIndex];slot.stagedCapture={};
@@ -809,7 +836,7 @@ bool snapshotPendingGameTemporalGuidesAfterExecute(ID3D12CommandQueue* queue,ID3
     if(captured.provider.empty())captured.provider=pending.source==GameGuideSource::Ngx?L"NGX game evaluation":L"Streamline game tags";
     captured.provider+=L" (post-submit owned snapshot)";
     captured.capturedTickMs=GetTickCount64();captured.validUntilPresent=true;captured.snapshotOwned=true;
-    captured.confidence=pending.confidence;captured.cameraCut=pending.cameraCut;captured.depthInverted=pending.depthInverted;captured.depthConventionKnown=pending.depthConventionKnown;
+    captured.temporal=pending.temporal;captured.confidence=pending.confidence;captured.cameraCut=pending.cameraCut;captured.depthInverted=pending.depthInverted;captured.depthConventionKnown=pending.depthConventionKnown;
     captured.motionConventionKnown=pending.motionConventionKnown;captured.motionToPixelScaleX=pending.motionToPixelScaleX;captured.motionToPixelScaleY=pending.motionToPixelScaleY;
     captured.providerCommandListId=listId;captured.producerQueueId=qid;captured.providerViewportId=pending.providerViewportId;
     {
@@ -818,7 +845,7 @@ bool snapshotPendingGameTemporalGuidesAfterExecute(ID3D12CommandQueue* queue,ID3
         captured.captureSequence=g_nextCaptureSequence++;
         if(pending.depth){captured.depth12=slot.depth;captured.depthFormat=pending.depthFormat;captured.depthState=D3D12_RESOURCE_STATE_COMMON;captured.depthWidth=pending.depthWidth;captured.depthHeight=pending.depthHeight;captured.depthSnapshotOwned=true;}
         if(pending.motion){captured.motion12=slot.motion;captured.motionFormat=pending.motionFormat;captured.motionState=D3D12_RESOURCE_STATE_COMMON;captured.motionWidth=pending.motionWidth;captured.motionHeight=pending.motionHeight;captured.motionSnapshotOwned=true;}
-        slot.stagedCapture=captured;slot.captureConsumed=false;
+        captured.snapshotLease=slot.lease;slot.stagedCapture=captured;slot.captureConsumed=false;
     }
     if(pending.source==GameGuideSource::Ngx)g_ngxPostSubmitSnapshots.fetch_add(1,std::memory_order_relaxed);
     else g_streamlinePostSubmitSnapshots.fetch_add(1,std::memory_order_relaxed);

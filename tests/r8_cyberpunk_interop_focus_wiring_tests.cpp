@@ -31,7 +31,9 @@ int main(){
  ok&=forbid(on12,"createRecoveryInteropSurface","invalid D3D11-created reverse interop path is still present");
  ok&=need(host,"D3D12_COMMAND_QUEUE_PRIORITY_HIGH","NRHost does not request a high-priority GPU queue under foreground load");
  ok&=need(host,"ABOVE_NORMAL_PRIORITY_CLASS","NRHost process is not protected from foreground scheduling starvation");
- ok&=need(ext,"waitForExactOutput(shared_,fence11_.Get(),outputFenceEvent_,hostProcess_,pendingSeq_","Synchronized mode does not drain an outstanding exact neural frame");
+ ok&=need(ext,"waitOutput(pendingSeq_,pendingOutputValue_,drainBudget)","Synchronized mode does not drain an outstanding exact neural frame");
+ ok&=need(ext,"waitForExactOutput(shared_,fence11_.Get()","D3D11 exact-output fence wait must remain wired");
+ ok&=need(ext,"waitForExactOutput(shared_,fence12_.Get()","D3D12 exact-output fence wait must remain wired");
  ok&=need(extPolicy,"FramePacingMode::Synchronized: return 2000","Synchronized mode must retain its exact frame within the host watchdog");
  return ok?0:1;
 }

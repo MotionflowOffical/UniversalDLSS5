@@ -5,6 +5,12 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ALLOW_LOCAL_RUNTIME = "--allow-local-runtime" in sys.argv[1:]
 REQUIRED = [
+    'include/udlss/temporal_frame.hpp', 'include/udlss/snapshot_lease.hpp',
+    'include/udlss/gpu_fence_wait.hpp', 'include/udlss/host_feature_policy.hpp',
+    'src/gpu/d3d12_native_pipeline.hpp', 'src/gpu/d3d12_native_pipeline.cpp',
+    'src/testapp/scene.hlsl', 'tests/temporal_contract_tests.cpp',
+    'tests/shader_visual_tests.cpp', 'tests/native_pipeline_visual_tests.cpp',
+    'tests/d3d11_host_visual_tests.cpp',
     'CMakeLists.txt', 'BUILD_WINDOWS.bat', 'BUILD_RELEASE.bat', 'README.md', 'THIRD_PARTY.md',
     'include/udlss/settings.hpp', 'include/udlss/shared_control.hpp', 'include/udlss/guide_quality_policy.hpp', 'include/udlss/resource_extraction_policy.hpp', 'include/udlss/game_guides_api.hpp',
     'include/udlss/native_motion_policy.hpp', 'include/udlss/camera_matrix_policy.hpp', 'include/udlss/camera_motion_math.hpp', 'include/udlss/motion_route_policy.hpp',
@@ -143,7 +149,7 @@ for forbidden in ['params->Set(kPaperWhite', 'params->Set(kTransferStrength', 'p
         fail(f'v0.4.1 NRHost sends a non-contract generic parameter: {forbidden}')
 if 'OpenSharedHandleByName' in host_source:
     fail('external NR host must not rediscover D3D11-created GPU objects by name')
-for token in ['kAbi=7', 'lastGpuMs', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
+for token in ['kAbi=8', 'lastGpuMs', 'fenceHandle', 'colorHandle', 'outputHandle', 'motionHandle', 'depthHandle', 'allowUnsupportedHardware', 'realGpuArchitecture', 'reportedGpuArchitecture', 'architectureCompatibilityActive']:
     if token not in host_protocol:
         fail(f'external-host protocol missing duplicated-handle field: {token}')
 for token in ['kMagic', 'kAbi', 'inputFenceValue', 'outputFenceValue', 'enqueuedSeq']:
@@ -233,7 +239,7 @@ for forbidden in ['snapshotVolatileD3D12Guide', 'CopyResource(snapshot.Get(),sou
 
 # External NRHost must carry the selected pass count and execute the same-frame
 # reset-only refinement chain instead of silently collapsing 2x-4x to one pass.
-for token in ['kAbi=7', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
+for token in ['kAbi=8', 'nrPassesRequested', 'nrPassesExecuted', 'refinementAvailable', 'refinementFailureResult']:
     if token not in host_protocol:
         fail(f'v0.4.4 external-host multipass protocol missing: {token}')
 for token in ['nrPassesRequested=st.neuralPassesRequested', 'st.neuralPassesExecuted=shared_->nrPassesExecuted']:

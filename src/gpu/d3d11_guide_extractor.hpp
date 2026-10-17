@@ -2,6 +2,7 @@
 #include "udlss/settings.hpp"
 #include "udlss/shared_control.hpp"
 #include "udlss/game_guides_api.hpp"
+#include "udlss/temporal_frame.hpp"
 #include "udlss/native_motion_policy.hpp"
 #include "udlss/game_guide_policy.hpp"
 #include <d3d11.h>
@@ -10,6 +11,7 @@
 
 namespace udlss::gpu {
 struct GuideProbeResult {
+    TemporalFrame temporal{};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> depth;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> motion;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> controlMask;
@@ -50,6 +52,7 @@ private:
     UINT depthCopyWidth_{},depthCopyHeight_{};
     void* adapter_{};
     GameGuidesGetFrameV1 getFrame_{};
+    GameGuidesGetFrameV2 getFrame2_{};
     bool adapterProbeAttempted_{};
 };
 }

@@ -7,12 +7,16 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <string>
+#include "udlss/temporal_frame.hpp"
+#include "udlss/snapshot_lease.hpp"
 
 namespace udlss::gpu {
 
 enum class GameTemporalGuideCaptureMode : std::uint32_t { Disabled=0, PresentSafeOnly=1, SnapshotOnly=2, Full=3 };
 
 struct CapturedGameGuides {
+    std::shared_ptr<void> snapshotLease;
+    TemporalFrame temporal{};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> depth11;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> motion11;
     Microsoft::WRL::ComPtr<ID3D12Resource> depth12;

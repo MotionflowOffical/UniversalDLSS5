@@ -39,6 +39,7 @@ struct NativeMotionParams {
     float inputToPixelScaleX{1.0f};
     float inputToPixelScaleY{1.0f};
     float pad{};
+    float jitterDeltaX{},jitterDeltaY{},reserved[2]{};
 };
 struct CameraMotionParams {
     float currentClipToPreviousClip[16]{};
@@ -55,11 +56,11 @@ bool isSrgbFormat(DXGI_FORMAT format){
 }
 MotionRoute fallbackMotionRoute(MotionSource source,bool nvofAvailable){
     if(nvofAvailable) return MotionRoute::Nvof;
-    return source==MotionSource::SynthesizedOpticalFlow ? MotionRoute::Hlsl : MotionRoute::Zero;
+    return source!=MotionSource::Zero ? MotionRoute::Hlsl : MotionRoute::Zero;
 }
 }
 
-D3D11Pipeline::~D3D11Pipeline(){ if(backend_) neural::destroyBackend(backend_); }
+D3D11Pipeline::~D3D11Pipeline()=default;
 
 void D3D11Pipeline::setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queue){
     nativeD12_=device; nativeQueue12_=queue;
@@ -68,7 +69,7 @@ void D3D11Pipeline::setNativeD3D12(ID3D12Device* device,ID3D12CommandQueue* queu
 void D3D11Pipeline::setForceExternalHost(bool value){
     if(forceExternalHost_==value)return;
     forceExternalHost_=value;
-    if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+    backend_.reset();
     backendFallback_=false;
 }
 
@@ -79,13 +80,26 @@ void D3D11Pipeline::releaseViews(){
     for(auto& entry:directSourceSrvs_){entry.srv.Reset();entry.texture.Reset();}
     for(auto& entry:blitRtvs_){entry.rtv.Reset();entry.texture.Reset();}
     directSourceCursor_=blitRtvCursor_=0;
+    previousTemporalValid_=false;
     width_=height_=0; backFormat_=DXGI_FORMAT_UNKNOWN; hasHistory_=false;hlslHistoryValid_=false; motionRouteValid_=false; nvof_.resetHistory();
 }
 
 void D3D11Pipeline::reset(){ forceResetNext_=true; releaseViews(); if(backend_) backend_->reset(); }
 
+std::shared_ptr<neural::Backend> D3D11Pipeline::externalHostForNative(const Settings&s,const std::wstring&runtime,RuntimeStatus&st){
+    if(s.backend!=BackendMode::ExternalHostNR||!ensureBackend(s,runtime,st)||backendFallback_)return {};
+    return backend_;
+}
+void D3D11Pipeline::suspendForNative(){
+    if(!width_)return;
+    ComPtr<ID3DDeviceContextState> previous,clean;
+    context1_->SwapDeviceContextState(ownState_.Get(),&previous);context_->ClearState();
+    context1_->SwapDeviceContextState(previous.Get(),&clean);ownState_=clean;
+    releaseViews();nvof_.shutdown();forceResetNext_=true;
+}
+
 void D3D11Pipeline::retryNeural(){
-    if(backend_){ neural::destroyBackend(backend_); backend_=nullptr; }
+    backend_.reset();
     runtime_.clear();
     forceResetNext_=true;
     backendFallback_=false;
@@ -183,14 +197,14 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
         }
         return true;
     }
-    if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+    backend_.reset();
     backendMode_=s.backend;runtime_=runtime;attemptUnsupportedCached_=s.attemptUnsupportedHardware;
     backendFallback_=false;backendFallbackMessage_.clear();backendFallbackResult_=0;backendFallbackRequiredTags_=0;backendFallbackMissingTag_=0;backendFallbackFeature_={};backendFallbackFailureStage_=PipelineStage::None;backendFallbackStageMask_=0;backendFallbackNeuralApi_=NeuralExecutionApi::None;
-    neural::BackendInitContext init{device_.Get(),context_.Get(),nativeD12_.Get(),nativeQueue12_.Get()};
+    neural::BackendInitContext init{device_.Get(),context_.Get(),nativeD12_?nativeD12_.Get():hostD12_.Get(),nativeQueue12_?nativeQueue12_.Get():hostQueue12_.Get()};
 
     if(s.backend==BackendMode::InGameNR && forceExternalHost_){
         const RuntimeStatus preInit=st;
-        backend_=neural::createExternalHostNR();
+        backend_.reset(neural::createExternalHostNR());
         RuntimeStatus hostStatus=preInit;
         if(backend_ && backend_->initialize(init,runtime,s,hostStatus)){
             st=hostStatus;st.neuralLocation=NeuralExecutionLocation::ExternalHost;st.neuralBackendKind=NeuralBackendKind::ExternalHost;
@@ -198,11 +212,11 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
             wcsncpy_s(st.message,L"D3D12 recovery route isolated through x64 NRHost",_TRUNCATE);
             return true;
         }
-        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backend_.reset();
         backendFallback_=true;
         backendFallbackMessage_=hostStatus.message[0]?hostStatus.message:L"D3D12 recovery requires UniversalDLSS5.NRHost.exe";
         backendFallbackResult_=hostStatus.lastResult;backendFallbackRequiredTags_=hostStatus.requiredTagCount;backendFallbackMissingTag_=hostStatus.missingRequiredTag;backendFallbackFeature_=hostStatus.feature;backendFallbackFailureStage_=hostStatus.failureStage;backendFallbackStageMask_=hostStatus.stageMask;backendFallbackNeuralApi_=hostStatus.neuralApi;
-        backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+        backend_.reset(neural::createPassthrough());RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
     }
 
     if(s.backend==BackendMode::InGameNR){
@@ -211,24 +225,24 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
         // A 32-bit bridge cannot load the x64 signed Feature-18 runtime in-process.
         // Route directly to the x64 NRHost instead of attempting an impossible
         // in-process NGX/Streamline initialization first.
-        backend_=neural::createExternalHostNR();
+        backend_.reset(neural::createExternalHostNR());
         RuntimeStatus hostStatus=preInit;
         if(backend_ && backend_->initialize(init,runtime,s,hostStatus)){
             st=hostStatus;st.neuralLocation=NeuralExecutionLocation::ExternalHost;st.neuralBackendKind=NeuralBackendKind::ExternalHost;
             wcsncpy_s(st.backendName,L"External x64 Feature 18 host (x86 game)",_TRUNCATE);return true;
         }
-        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backend_.reset();
         backendFallback_=true;backendFallbackMessage_=hostStatus.message[0]?hostStatus.message:L"x86 game requires UniversalDLSS5.NRHost.exe x64";backendFallbackResult_=hostStatus.lastResult;backendFallbackFailureStage_=hostStatus.failureStage;backendFallbackStageMask_=hostStatus.stageMask;backendFallbackNeuralApi_=hostStatus.neuralApi;
-        backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+        backend_.reset(neural::createPassthrough());RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
 #else
-        backend_=neural::createInGameNR();
+        backend_.reset(neural::createInGameNR());
         RuntimeStatus directStatus=preInit;
         if(backend_ && backend_->initialize(init,runtime,s,directStatus)){
             st=directStatus;wcsncpy_s(st.backendName,backend_->name(),_TRUNCATE);return true;
         }
-        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backend_.reset();
 
-        backend_=neural::createExternalHostNR();
+        backend_.reset(neural::createExternalHostNR());
         RuntimeStatus hostStatus=preInit;
         if(backend_ && backend_->initialize(init,runtime,s,hostStatus)){
             st=hostStatus;
@@ -238,7 +252,7 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
             wcsncpy_s(st.message,message.c_str(),_TRUNCATE);
             return true;
         }
-        if(backend_){neural::destroyBackend(backend_);backend_=nullptr;}
+        backend_.reset();
 
         backendFallback_=true;
         std::wstring message=L"Direct in-game NR and external host both failed";
@@ -252,15 +266,15 @@ bool D3D11Pipeline::ensureBackend(const Settings&s,const std::wstring&runtime,Ru
         backendFallbackFailureStage_=hostStatus.failureStage!=PipelineStage::None?hostStatus.failureStage:directStatus.failureStage;
         backendFallbackStageMask_=directStatus.stageMask|hostStatus.stageMask;
         backendFallbackNeuralApi_=hostStatus.neuralApi!=NeuralExecutionApi::None?hostStatus.neuralApi:directStatus.neuralApi;
-        backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+        backend_.reset(neural::createPassthrough());RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
 #endif
     }
 
-    backend_=s.backend==BackendMode::ExternalHostNR?neural::createExternalHostNR():neural::createPassthrough();
+    backend_.reset(s.backend==BackendMode::ExternalHostNR?neural::createExternalHostNR():neural::createPassthrough());
     if(!backend_->initialize(init,runtime,s,st)){
         if(s.backend==BackendMode::ExternalHostNR){
             backendFallback_=true;backendFallbackMessage_=st.message;backendFallbackResult_=st.lastResult;backendFallbackRequiredTags_=st.requiredTagCount;backendFallbackMissingTag_=st.missingRequiredTag;backendFallbackFeature_=st.feature;backendFallbackFailureStage_=st.failureStage;backendFallbackStageMask_=st.stageMask;backendFallbackNeuralApi_=st.neuralApi;
-            neural::destroyBackend(backend_);backend_=neural::createPassthrough();RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
+            backend_.reset();backend_.reset(neural::createPassthrough());RuntimeStatus ignored{};backend_->initialize(init,runtime,s,ignored);applyFallback();return true;
         }
         return false;
     }
@@ -317,11 +331,33 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     if(externalGuide){
         const auto externalPriority=guideSourcePriority(externalGuide->source);
         const auto localPriority=guideSourcePriority(guide.source);
+        const auto merge=chooseTemporalGuideMerge(guide.temporal,externalGuide->temporal,localPriority,externalPriority);
+        if(merge==TemporalGuideMerge::Replace){guide=*externalGuide;}
+        if(merge!=TemporalGuideMerge::KeepLocal){
+        const bool hadLocal=guide.depth||guide.motion;
+        const auto oldDepth=guide.depth.Get();const auto oldMotion=guide.motion.Get();
+
         if(externalGuide->depth && (!guide.depth || externalPriority>=localPriority)){guide.depth=externalGuide->depth;guide.depthViewFormat=externalGuide->depthViewFormat;guide.depthInverted=externalGuide->depthInverted;guide.depthConventionKnown=externalGuide->depthConventionKnown;guide.depthWidth=externalGuide->depthWidth;guide.depthHeight=externalGuide->depthHeight;guide.depthConfidence=externalGuide->depthConfidence;}
         if(externalGuide->motion && externalGuide->motionConventionValid && (!guide.motion || externalPriority>=localPriority)){guide.motion=externalGuide->motion;guide.motionConventionValid=true;guide.motionEncoding=externalGuide->motionEncoding;guide.motionScaleX=externalGuide->motionScaleX;guide.motionScaleY=externalGuide->motionScaleY;guide.motionWidth=externalGuide->motionWidth;guide.motionHeight=externalGuide->motionHeight;guide.motionConfidence=externalGuide->motionConfidence;}
+        const bool adopted=oldDepth!=guide.depth.Get()||oldMotion!=guide.motion.Get();
+        if(adopted){
+            if(!hadLocal||temporalFramesMatch(guide.temporal,externalGuide->temporal)){
+                const bool bothKnown=(guide.temporal.flags&externalGuide->temporal.flags&Temporal_SourceFrameKnown)!=0;
+                guide.temporal=externalGuide->temporal;
+                if(hadLocal&&!bothKnown)invalidateUnmatchedTemporalMetadata(guide.temporal);
+            }
+        }
         if(externalGuide->cameraCut)guide.cameraCut=true;
         if((guide.depth||guide.motion)&&externalPriority>=localPriority){guide.source=externalGuide->source;guide.provider=externalGuide->provider;wcsncpy_s(st.guideAdapterName,guide.provider.c_str(),_TRUNCATE);std::wstring fields;if(guide.motion)fields=L"game motion";if(guide.depth){if(!fields.empty())fields+=L", ";fields+=L"game depth";}wcsncpy_s(st.guideFields,fields.c_str(),_TRUNCATE);if(guide.depth)wcsncpy_s(st.depthName,guide.provider.c_str(),_TRUNCATE);}
     }
+    }
+    guide.temporal.outputWidth=desc.Width;guide.temporal.outputHeight=desc.Height;
+    if(previousTemporalValid_&&temporalDiscontinuity(previousTemporal_,guide.temporal)){
+        forceResetNext_=true;
+        if(!canReusePresentedColorHistory(previousTemporal_,guide.temporal))hasHistory_=false;
+        hlslHistoryValid_=false;nvof_.resetHistory();
+    }
+    const auto jitterDelta=previousTemporalValid_?canonicalJitterDelta(previousTemporal_,guide.temporal,desc.Width,desc.Height):std::array<float,2>{};
     const auto trackedMotion=globalD3D11ResourceTracker().bestMotionCandidate(device_.Get(),desc.Width,desc.Height);
     const auto camera=globalD3D11CameraTracker().snapshot(device_.Get());
     st.nativeMotionCandidateId=trackedMotion.stableId;
@@ -339,7 +375,8 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     // NVOFA is prepared as the universal fallback. Native game motion and
     // camera+depth motion still take priority in Auto mode.
     bool nvofAvailable=false;
-    if(settings.motionSource!=MotionSource::Zero){
+    const bool predictedNative=settings.motionSource==MotionSource::Auto && ((guide.motion&&guide.motionConventionValid)||trackedMotion.texture||(guide.depth&&camera.currentValid&&camera.previousValid&&camera.confidence>=50));
+    if(settings.motionSource!=MotionSource::Zero&&!predictedNative){
         const auto requestedGrid=std::min<std::uint32_t>(4,effective.flowDownsample);
         nvofAvailable=nvof_.configure(device_.Get(),context_.Get(),desc.Width,desc.Height,requestedGrid,settings.latencyMode,st);
         if(nvofAvailable) effective.flowDownsample=nvof_.gridSize();
@@ -358,7 +395,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
 
     const ColorEncoding colorEncoding=colorContext?colorContext->decision.encoding:(isSrgbFormat(desc.Format)?ColorEncoding::SdrSrgb:ColorEncoding::SdrLinear);
     const bool hdrActive=colorContext&&colorContext->decision.hdrActive&&colorContext->decision.supported;
-    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.sourceSrgb=colorEncoding==ColorEncoding::SdrSrgb?1u:0u;p.useControlMask=settings.useControlMask?1u:0u;p.colorEncoding=(std::uint32_t)colorEncoding;p.hdrActive=hdrActive?1u:0u;p.hdrPaperWhite=colorContext?colorContext->paperWhiteNits:203.0f;p.hdrMaxNits=colorContext?colorContext->maxNits:1000.0f;
+    Params p{};p.width=width_;p.height=height_;p.downsample=effective.flowDownsample;p.radius=effective.flowSearchRadius;p.exposure=settings.exposure;p.motionScale=settings.motionScale;p.confidence=settings.flowConfidenceThreshold;p.textProtection=settings.protectUI?settings.textProtection:0.0f;p.uiProtection=settings.protectUI?settings.uiProtection:0.0f;p.edgeThreshold=settings.edgeThreshold;p.sharpness=settings.sharpness;p.reactive=settings.reactiveStrength;p.controlMaskStrength=settings.controlMaskStrength;p.historyClamp=settings.historyClamp;p.disocclusion=settings.disocclusionThreshold;p.temporal=settings.temporalStrength;p.invertY=settings.invertMotionY?1u:0u;p.hasHistory=hasHistory_&&!guide.cameraCut?1u:0u;p.pad0=0;p.pad1=0;p.staticDeadzone=settings.staticMotionDeadzone;p.motionScaleX=settings.motionScaleX;p.motionScaleY=settings.motionScaleY;p.debugSplit=settings.debugSplit;p.debugView=(std::uint32_t)settings.debugView;p.depthMode=(std::uint32_t)settings.depthMode;p.sourceSrgb=colorEncoding==ColorEncoding::SdrSrgb?1u:0u;p.useControlMask=settings.useControlMask?1u:0u;p.colorEncoding=(std::uint32_t)colorEncoding;p.hdrActive=hdrActive?1u:0u;p.hdrPaperWhite=colorContext?colorContext->paperWhiteNits:203.0f;p.hdrMaxNits=colorContext?colorContext->maxNits:1000.0f;
     auto uploadMain=[&](){D3D11_MAPPED_SUBRESOURCE m{};if(FAILED(context_->Map(cb_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,&p,sizeof(p));context_->Unmap(cb_.Get(),0);return true;};
     auto uploadBuffer=[&](ID3D11Buffer* buffer,const void* data,size_t bytes){D3D11_MAPPED_SUBRESOURCE m{};if(!buffer||FAILED(context_->Map(buffer,0,D3D11_MAP_WRITE_DISCARD,0,&m)))return false;memcpy(m.pData,data,bytes);context_->Unmap(buffer,0);return true;};
     if(!uploadMain()){restore();return false;}
@@ -372,13 +409,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
 
     const UINT lw=(width_+effective.flowDownsample-1)/effective.flowDownsample;
     const UINT lh=(height_+effective.flowDownsample-1)/effective.flowDownsample;
-    const bool maintainHlslHistory=shouldMaintainHlslFlowHistory(settings.motionSource);
-    // HLSL optical flow is an explicit/fallback path only for the Optical Flow
-    // setting. Refresh the low-resolution luminance history every frame when
-    // HLSL optical flow is active; native, camera, NVOFA and zero-motion modes
-    // do not need this extra downsample/history traffic.
-    if(maintainHlslHistory){ID3D11ShaderResourceView*s[]={currentSrv_.Get()};ok&=runCompute(downsample_.Get(),s,1,currentLowUav_.Get(),lw,lh);}
-    else hlslHistoryValid_=false;
+    bool maintainHlslHistory=false;
 
     // Depth is prepared before selecting motion because geometric camera motion
     // requires the actual game depth buffer.
@@ -403,7 +434,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         availability.cameraDepth=cameraDepthReady;
     }
     availability.nvof=settings.motionSource!=MotionSource::Zero&&nvofAvailable;
-    availability.hlsl=settings.motionSource==MotionSource::SynthesizedOpticalFlow;
+    availability.hlsl=settings.motionSource!=MotionSource::Zero;
     MotionRoute route=settings.motionSource==MotionSource::Zero?MotionRoute::Zero:chooseMotionRoute(availability);
     bool trustedMotion=false;
     float frameScaleX=settings.motionScaleX,frameScaleY=settings.motionScaleY;
@@ -412,7 +443,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         ComPtr<ID3D11ShaderResourceView> nativeSrv;
         if(!guide.motion||!guide.motionConventionValid||FAILED(device_->CreateShaderResourceView(guide.motion.Get(),nullptr,&nativeSrv))){route=cameraDepthReady?MotionRoute::CameraDepth:fallbackMotionRoute(settings.motionSource,nvofAvailable);}
         else{
-            NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)guide.motionEncoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;np.inputToPixelScaleX=guide.motionScaleX;np.inputToPixelScaleY=guide.motionScaleY;
+            NativeMotionParams np{};np.width=width_;np.height=height_;np.encoding=(std::uint32_t)guide.motionEncoding;np.invertY=settings.invertMotionY?1u:0u;np.motionScale=settings.motionScale;np.inputToPixelScaleX=guide.motionScaleX;np.inputToPixelScaleY=guide.motionScaleY;np.jitterDeltaX=jitterDelta[0];np.jitterDeltaY=jitterDelta[1];
             ok&=uploadBuffer(nativeMotionCb_.Get(),&np,sizeof(np));ID3D11ShaderResourceView*s[]={nativeSrv.Get()};ok&=runComputeWithConstants(nativeMotionConvert_.Get(),s,1,motionUav_.Get(),width_,height_,nativeMotionCb_.Get());
             trustedMotion=true;frameScaleX=settings.motionScaleX;frameScaleY=settings.motionScaleY;
             const float reliable[4]={0,0,1,0};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),reliable);
@@ -446,12 +477,15 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
         }else if(!hadPrevious){
             const float initialFlow[4]={0,0,0,1};context_->ClearUnorderedAccessViewFloat(flowUav_.Get(),initialFlow);
         }else{
-            // Auto is fail-safe: a failed hardware-flow frame becomes zero
-            // guidance, while the explicit Optical Flow mode may use HLSL.
+            // Both Auto and explicit optical flow use the confidence-gated
+            // software fallback if the hardware path fails.
             route=fallbackMotionRoute(settings.motionSource,false);
         }
     }
     if(route==MotionRoute::Hlsl){
+        maintainHlslHistory=shouldMaintainHlslFlowHistory(settings.motionSource,true);
+        {ID3D11ShaderResourceView* inputs[]={currentSrv_.Get()};ok&=runCompute(downsample_.Get(),inputs,1,currentLowUav_.Get(),lw,lh);}
+
         const auto fullHistory=p.hasHistory;p.hasHistory=hlslHistoryValid_?1u:0u;
         p.downsample=effective.flowDownsample;p.pad1=0;uploadMain();ID3D11ShaderResourceView*s[]={currentLowSrv_.Get(),historyLowSrv_.Get()};ok&=runCompute(flow_.Get(),s,2,flowUav_.Get(),lw,lh);
         p.hasHistory=fullHistory;
@@ -479,7 +513,7 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
 
     const auto resolvedMotionSource=route==MotionRoute::Zero?MotionSource::Zero:settings.motionSource;
     const bool weakGuideReset=shouldForceTemporalResetForWeakGuides(resolvedMotionSource,realDepth,trustedMotion,cameraDepthReady);
-    neural::FrameResources fr{};fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr;fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_||weakGuideReset;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
+    neural::FrameResources fr{};fr.temporal=guide.temporal;fr.temporal.flags&=~Temporal_MotionJittered;fr.input=nrInput8_.Get();fr.output=nrOutput8_.Get();fr.motion=motionTex_.Get();fr.depth=depthTex_.Get();fr.controlMask=explicitControlMask?nrControlMaskTex_.Get():nullptr;fr.width=width_;fr.height=height_;fr.inputFormat=DXGI_FORMAT_R8G8B8A8_UNORM;fr.depthInverted=depthInverted;fr.resetHistory=forceResetNext_||guide.cameraCut||!hasHistory_||weakGuideReset;fr.motionScaleX=frameScaleX;fr.motionScaleY=frameScaleY;
     // Synthesized/camera/native converter paths already baked global MotionScale
     // and Y inversion into the texture. Adapter-native motion did not, so its
     // complete scale is carried through frameScaleX/Y above.
@@ -494,10 +528,13 @@ bool D3D11Pipeline::process(ID3D11Texture2D*bb,const Settings&settings,const std
     const bool neuralEval=backend_->evaluate(context_.Get(),fr,settings,st);
     st.neuralActive=isNeuralEvaluation(settings.backend,backendFallback_,neuralEval)?1u:0u;
     if(!neuralEval){context_->CopyResource(nrOutput8_.Get(),nrInput8_.Get());if(settings.resetOnTemporalGap)forceResetNext_=true;}else forceResetNext_=false;
+    p.pad1=postCompositeMotionFlags(route);uploadMain();
     {ID3D11ShaderResourceView*s[]={nrOutput8Srv_.Get(),currentSrv_.Get(),maskSrv_.Get(),motionSrv_.Get(),depthSrv_.Get()};ok&=runCompute(post_.Get(),s,5,postUav_.Get(),width_,height_);}
     const bool blitOk=blit(bb,st);ok&=blitOk;if(blitOk)markPipelineStage(st.stageMask,PipelineStage::OutputComposited);else if(st.failureStage==PipelineStage::None)st.failureStage=PipelineStage::OutputCompositeFailed;
     context_->CopyResource(history_.Get(),current_.Get());
+    if(!maintainHlslHistory)hlslHistoryValid_=false;
     if(maintainHlslHistory){context_->CopyResource(historyLow_.Get(),currentLow_.Get());hlslHistoryValid_=true;}
+    previousTemporal_=guide.temporal;previousTemporalValid_=true;
     hasHistory_=true;
     restore();return ok;
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include "temporal_frame.hpp"
 
 namespace udlss {
 constexpr std::uint32_t kGameGuidesAbiV1=1;
@@ -36,4 +37,13 @@ struct GameGuideFrameV1 {
 
 using GameGuidesGetFrameV1 = bool (*)(void* d3d11Device, void* d3d11Context,
                                       void* backbuffer, GameGuideFrameV1* outFrame);
+// V1 stays byte-for-byte compatible. Providers with frame provenance can
+// implement V2; the bridge prefers it without assuming V1 buffers are larger.
+constexpr const char kGameGuidesExportV2[]="UdlssGameGuides_GetFrameV2";
+struct GameGuideFrameV2 {
+    std::uint32_t size{sizeof(GameGuideFrameV2)},abi{2};
+    GameGuideFrameV1 resources{};
+    TemporalFrame temporal{};
+};
+using GameGuidesGetFrameV2=bool (*)(void*,void*,void*,GameGuideFrameV2*);
 }

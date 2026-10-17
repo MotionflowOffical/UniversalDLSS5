@@ -83,6 +83,43 @@ You can also start the controller with `UniversalDLSS5.exe --launch "C:\path\gam
 
 For D3D12 with **External host**, the shared-resource path uses owned motion/depth snapshots and completes the composite before Present, including when the presenting queue was captured at startup. Keep **Neural passes** at **1x** for a single evaluation per frame.
 
+When synchronized Auto mode has completed, owned game depth and motion snapshots,
+supported color formats and an uncropped viewport, preparation, host transport
+and compositing can run directly in D3D12. Other inputs use the D3D11 transport.
+Both routes share the same neural host so switching routes preserves its warmed
+feature. Compatible texture rebindings retain that feature; resolution or preset
+changes recreate it. Install the bridge and NRHost from the same build.
+
+Auto motion uses native game motion, tracked motion, camera/depth motion, hardware
+optical flow when built with the NVIDIA SDK, then confidence-gated software flow.
+Software flow searches several scales and rejects ambiguous or inconsistent
+matches. It supplies approximate motion and does not create real game depth.
+Frame IDs, viewport/render extents, camera and jitter metadata are preserved when
+providers supply them; absent metadata stays unknown. V1 game-guide adapters
+remain supported, and V2 adapters can provide this temporal metadata.
+
+HDR uses a bounded neural proxy and reconstructs scene-space detail as a residual
+on the original high-range image. Runtime input remains RGBA8; FP16 neural input
+has not been validated. Severe VRAM pressure at a cold host start can still slow
+neural evaluation substantially. Launch and attach before loading gameplay.
+
+## Deterministic graphics validation
+
+`UniversalDLSS5.TestApp.exe` renders a textured 3D scene with known depth and
+motion, moving camera/objects, camera cuts and fixed HUD digits. Use `--hdr` for
+scRGB, `--resize` for periodic resize, and `--frames 370 --report result.json`
+for a bounded smoke run. `--pressure-mb N` adds an optional bounded GPU allocation
+workload; `--no-vsync` disables the presentation limit. Hidden smoke-run timings
+are not gameplay FPS measurements.
+
+Build with `UDLSS_BUILD_TESTS=ON` and set `UDLSS_TEST_RUNTIME_DIR` to a local folder
+containing `nvngx_dlssnr.dll` to run real NVIDIA pixel tests with CTest. These
+tests verify visible changed output, one-pass evaluation, feature reuse across
+transport changes, continuous fallback history and safe retirement after a queue
+stall. Without a local runtime, NVIDIA-specific tests report skipped. Shader
+pixel tests use WARP. Pixel readback is confined to test executables; the injected
+bridge keeps its GPU-only frame path.
+
 Logs are written under:
 
 ```text

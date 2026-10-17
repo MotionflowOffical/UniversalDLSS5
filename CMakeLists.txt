@@ -11,6 +11,7 @@ option(UDLSS_BUILD_TESTS "Build portable tests" ON)
 option(UDLSS_WITH_STREAMLINE "Build optional Streamline DLSS NR backend" OFF)
 option(UDLSS_WITH_NGX_NR "Build direct NVIDIA NGX DLSS-NR backend (x64 only)" ON)
 option(UDLSS_WITH_NVOF "Enable NVIDIA Optical Flow Accelerator when SDK headers are available" ON)
+set(UDLSS_TEST_RUNTIME_DIR "" CACHE PATH "Optional local NVIDIA runtime directory for real GPU visual tests")
 set(UDLSS_STREAMLINE_ROOT "" CACHE PATH "Path to Streamline SDK root")
 set(UDLSS_NGX_ROOT "" CACHE PATH "Path to NVIDIA/DLSS SDK root")
 set(UDLSS_NVOF_ROOT "" CACHE PATH "Path to NVIDIA Optical Flow SDK root (folder containing NvOFInterface)")
@@ -20,12 +21,23 @@ target_include_directories(udlss_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/in
 
 if(UDLSS_BUILD_TESTS)
   enable_testing()
+  add_executable(temporal_contract_tests tests/temporal_contract_tests.cpp)
+  target_link_libraries(temporal_contract_tests PRIVATE udlss_common)
+  add_test(NAME temporal_contract_tests COMMAND temporal_contract_tests)
   if(WIN32)
+    add_executable(shader_visual_tests tests/shader_visual_tests.cpp)
+    target_compile_definitions(shader_visual_tests PRIVATE UDLSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(shader_visual_tests PRIVATE d3d11 d3dcompiler)
+    add_test(NAME shader_visual_tests COMMAND shader_visual_tests)
     add_executable(launch_application_tests tests/launch_application_tests.cpp src/controller/launch_client.cpp src/controller/processes.cpp)
     target_compile_definitions(launch_application_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(launch_application_tests PRIVATE udlss_common version)
     set_target_properties(launch_application_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/launch-tests")
     add_test(NAME launch_application_tests COMMAND launch_application_tests)
+    add_executable(injection_isolation_tests tests/injection_isolation_tests.cpp src/controller/processes.cpp src/controller/inject_client.cpp)
+    target_compile_definitions(injection_isolation_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(injection_isolation_tests PRIVATE udlss_common version)
+    add_test(NAME injection_isolation_tests COMMAND injection_isolation_tests)
     add_executable(external_host_wait_tests tests/external_host_wait_tests.cpp)
     target_link_libraries(external_host_wait_tests PRIVATE udlss_common d3d12)
     add_test(NAME external_host_wait_tests COMMAND external_host_wait_tests)
@@ -311,6 +323,9 @@ if(UDLSS_BUILD_TESTS)
   add_executable(provider_snapshot_policy_tests tests/provider_snapshot_policy_tests.cpp)
   target_link_libraries(provider_snapshot_policy_tests PRIVATE udlss_common)
   add_test(NAME provider_snapshot_policy_tests COMMAND provider_snapshot_policy_tests)
+  add_executable(snapshot_promotion_tests tests/snapshot_promotion_tests.cpp)
+  target_link_libraries(snapshot_promotion_tests PRIVATE udlss_common)
+  add_test(NAME snapshot_promotion_tests COMMAND snapshot_promotion_tests)
   add_executable(present_processing_policy_tests tests/present_processing_policy_tests.cpp)
   target_link_libraries(present_processing_policy_tests PRIVATE udlss_common)
   add_test(NAME present_processing_policy_tests COMMAND present_processing_policy_tests)
@@ -360,7 +375,7 @@ if(WIN32)
   add_library(UniversalDLSS5.Bridge SHARED
     src/bridge/bridge_main.cpp src/bridge/dxgi_hooks.cpp src/bridge/d3d9_hooks.cpp src/bridge/opengl_hooks.cpp src/bridge/vulkan_hooks.cpp src/bridge/hook_lifecycle.cpp src/bridge/attach_logger.cpp
     src/gpu/d3d11_pipeline.cpp src/gpu/d3d11_guide_extractor.cpp src/gpu/d3d11_resource_tracker.cpp src/gpu/d3d11_camera_tracker.cpp
-    src/gpu/d3d12_resource_tracker.cpp src/gpu/game_temporal_guides.cpp src/gpu/d3d12_on12.cpp src/gpu/nv_optical_flow.cpp
+    src/gpu/d3d12_resource_tracker.cpp src/gpu/game_temporal_guides.cpp src/gpu/d3d12_on12.cpp src/gpu/d3d12_native_pipeline.cpp src/gpu/nv_optical_flow.cpp
     src/compat/canonical_surface.cpp src/compat/compat_dispatch.cpp src/compat/d3d10_frontend.cpp src/compat/legacy_copy_ring.cpp src/compat/d3d9_frontend.cpp src/compat/opengl_frontend.cpp src/compat/vulkan_frontend.cpp
     src/neural/passthrough.cpp src/neural/ingame_nr.cpp src/neural/nvidia_driver_win.cpp src/neural/ngx_nr.cpp src/neural/external_host.cpp src/neural/streamline_nr.cpp
     src/common/shared_control_win.cpp)
@@ -385,6 +400,20 @@ if(WIN32)
     target_compile_definitions(UniversalDLSS5.NRHost PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_include_directories(UniversalDLSS5.NRHost PRIVATE "${UDLSS_NGX_ROOT}/include" ${CMAKE_CURRENT_SOURCE_DIR}/src/neural)
     target_link_libraries(UniversalDLSS5.NRHost PRIVATE udlss_common minhook d3d12 dxgi shell32 "${UDLSS_NGX_LIB}")
+    if(UDLSS_BUILD_TESTS)
+      add_executable(native_pipeline_visual_tests tests/native_pipeline_visual_tests.cpp src/gpu/d3d12_native_pipeline.cpp src/neural/external_host.cpp src/neural/passthrough.cpp)
+      target_compile_definitions(native_pipeline_visual_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+      target_link_libraries(native_pipeline_visual_tests PRIVATE udlss_common d3d11 d3d12 dxgi d3dcompiler)
+      set_target_properties(native_pipeline_visual_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+      add_test(NAME native_pipeline_visual_tests COMMAND native_pipeline_visual_tests ${UDLSS_TEST_RUNTIME_DIR})
+      set_tests_properties(native_pipeline_visual_tests PROPERTIES SKIP_RETURN_CODE 77)
+      add_executable(d3d11_host_visual_tests tests/d3d11_host_visual_tests.cpp src/neural/external_host.cpp src/neural/passthrough.cpp)
+      target_compile_definitions(d3d11_host_visual_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+      target_link_libraries(d3d11_host_visual_tests PRIVATE udlss_common d3d11 d3d12 dxgi)
+      set_target_properties(d3d11_host_visual_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+      add_test(NAME d3d11_host_visual_tests COMMAND d3d11_host_visual_tests ${UDLSS_TEST_RUNTIME_DIR})
+      set_tests_properties(d3d11_host_visual_tests PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 
     add_library(UniversalDLSS5.NRForwarder SHARED src/host/nr_forwarder.cpp)
     target_compile_definitions(UniversalDLSS5.NRForwarder PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -414,7 +443,10 @@ if(WIN32)
   endif()
 
   add_executable(UniversalDLSS5.TestApp WIN32 src/testapp/main.cpp)
-  target_link_libraries(UniversalDLSS5.TestApp PRIVATE d3d11 dxgi d3dcompiler)
+  target_link_libraries(UniversalDLSS5.TestApp PRIVATE udlss_common d3d11 dxgi d3dcompiler shell32)
+  add_custom_command(TARGET UniversalDLSS5.TestApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UniversalDLSS5.TestApp>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/src/testapp/scene.hlsl" "$<TARGET_FILE_DIR:UniversalDLSS5.TestApp>/shaders/test_scene.hlsl")
 
   add_custom_command(TARGET UniversalDLSS5.Bridge POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UniversalDLSS5.Bridge>/shaders"

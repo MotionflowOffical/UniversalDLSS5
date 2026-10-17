@@ -245,7 +245,7 @@ int main() {
         std::cerr << "External NR protocol does not carry control mask, reset, and verified NR tuning values\n";
         return 1;
     }
-    if (externalProtocol.find("kAbi=7") == std::string::npos ||
+    if (externalProtocol.find("kAbi=8") == std::string::npos ||
         externalProtocol.find("fenceHandle") == std::string::npos ||
         externalProtocol.find("colorHandle") == std::string::npos ||
         externalProtocol.find("outputHandle") == std::string::npos ||
@@ -259,10 +259,10 @@ int main() {
         return 1;
     }
 
-    if (externalHost.find("settings.motionScaleX*frame.motionScaleX") == std::string::npos ||
-        externalHost.find("settings.motionScaleY*frame.motionScaleY") == std::string::npos ||
+    if (externalHost.find("shared_->motionScaleX=frame.motionScaleX") == std::string::npos ||
+        externalHost.find("shared_->motionScaleY=frame.motionScaleY") == std::string::npos ||
         externalHost.find("lastPreset_") == std::string::npos) {
-        std::cerr << "External NR host does not compose adapter/user MV scale or recreate on preset changes\n";
+        std::cerr << "External NR host must use canonical frame MV scales and reconfigure on preset changes\n";
         return 1;
     }
 

@@ -2,7 +2,11 @@ Texture2D<float4> Neural:register(t0);Texture2D<float4> Current:register(t1);Tex
 cbuffer Params:register(b0){uint Width,Height,Downsample,Radius;float Exposure,MotionScale,ConfidenceThreshold,TextProtection;float UIProtection,EdgeThreshold,Sharpness,ReactiveStrength;float ControlMaskStrength,HistoryClamp,DisocclusionThreshold,TemporalStrength;uint InvertY,HasHistory,Pad0,Pad1;float StaticDeadzone,MotionScaleX,MotionScaleY,DebugSplit;uint DebugView,DepthMode,SourceSrgb,UseControlMask;uint ColorEncoding,HdrActive;float HdrPaperWhite,HdrMaxNits;};
 float FromSrgb(float x){x=max(x,0.0);return x<=0.04045?x/12.92:pow((x+0.055)/1.055,2.4);}
 float3 SrgbToLinear(float3 c){return float3(FromSrgb(c.r),FromSrgb(c.g),FromSrgb(c.b));}
-float3 HdrToProxy(float3 scRgb){float3 positive=max(scRgb,0.0);float l=max(dot(positive,float3(.2126,.7152,.0722)),1e-6);float paper=max(HdrPaperWhite/80.0,0.25);float mapped=l/(l+paper);return saturate(positive*(mapped/l));}
+float3 HdrToProxy(float3 scRgb){
+    float3 positive=max(scRgb,0.0);float peak=max(positive.r,max(positive.g,positive.b));
+    // Max-channel compression preserves hue without clipping saturated colors.
+    return positive/(peak+max(HdrPaperWhite/80.0,0.25));
+}
 float NitsToPq(float n){const float m1=0.1593017578125,m2=78.84375,c1=0.8359375,c2=18.8515625,c3=18.6875;float y=pow(saturate(n/10000.0),m1);return pow((c1+c2*y)/(1.0+c3*y),m2);}
 float3 Rec709To2020(float3 c){return float3(0.627404*c.r+0.329283*c.g+0.043313*c.b,0.069097*c.r+0.919541*c.g+0.011362*c.b,0.016391*c.r+0.088013*c.g+0.895595*c.b);}
 float3 EncodeOutput(float3 scRgb){
@@ -16,13 +20,24 @@ float3 DebugToScene(float3 v){return HdrActive!=0?v*max(HdrPaperWhite/80.0,1.0):
  float3 base=HdrActive!=0?HdrToProxy(c.rgb):c.rgb;float3 n=HdrActive!=0||SourceSrgb!=0?SrgbToLinear(rawN.rgb):rawN.rgb;
  int2 l=int2(max(p.x-1,0),p.y),r=int2(min(p.x+1,(int)Width-1),p.y),u=int2(p.x,max(p.y-1,0)),d=int2(p.x,min(p.y+1,(int)Height-1));
  float3 blur=(NeuralProxy(l)+NeuralProxy(r)+NeuralProxy(u)+NeuralProxy(d))*.25;
- float3 sharp=n+(n-blur)*Sharpness;float mixN=saturate(TemporalStrength*(1-m.y*HistoryClamp));float3 processedProxy=lerp(base,sharp,mixN);processedProxy=lerp(processedProxy,base,saturate(m.a));
+ // With trusted native motion, NR already handles temporal history/reset.
+ // Source reactivity can jump on jitter or a history reset while the current
+ // neural image stays stable. Applying it again as output opacity makes
+ // lights pulse between the source and neural treatment.
+ // Flag 0x4 denotes actual native vectors, distinct from the mask shader's
+ // camera-inclusive confidence marker (2).
+ float reactiveBlend=(Pad1&4u)!=0?0.0:m.y;
+ float3 sharp=n+(n-blur)*Sharpness;float mixN=saturate(TemporalStrength*(1-reactiveBlend*HistoryClamp));float3 processedProxy=lerp(base,sharp,mixN);processedProxy=lerp(processedProxy,base,saturate(m.a));
  float3 processed;
  if(HdrActive!=0){
-    // Apply bounded neural detail/tone gain to the original high-range scene
-    // instead of inverse-tonemapping the 8-bit neural proxy. This preserves
-    // HDR highlight energy and wide-gamut color while still using NR detail.
-    float3 denom=max(base,float3(0.025,0.025,0.025));float3 gain=clamp(processedProxy/denom,float3(0.5,0.5,0.5),float3(2.0,2.0,2.0));processed=max(c.rgb*gain,0.0);
+    // Reconstruct a residual in source scene units. Unlike multiplicative
+    // RGB gain, this preserves identity exactly and can add neural detail to
+    // black/shadow pixels. Keep original HDR energy rather than inverting a
+    // quantized 8-bit proxy near its singular highlight endpoint.
+    float peak=max(c.r,max(c.g,c.b));float paper=max(HdrPaperWhite/80.0,0.25);
+    float3 residual=(processedProxy-base)*(peak+paper);
+    float limit=max(peak,0.0)*0.5+paper*0.25;
+    processed=max(c.rgb+clamp(residual,-limit,limit),0.0);
  }else processed=processedProxy;
  float3 outc=processed;
  if(DebugView==1)outc=c.rgb;

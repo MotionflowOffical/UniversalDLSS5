@@ -1,4 +1,5 @@
 #include "inject_client.hpp"
+#include "udlss/injection_policy.hpp"
 #include <windows.h>
 #include <filesystem>
 #include <vector>
@@ -9,6 +10,9 @@ std::wstring q(const std::wstring& s) { return L"\"" + s + L"\""; }
 }
 
 bool injectBridge(const ProcessInfo& p, const std::wstring& dir, std::wstring& message) {
+    if (isBridgeInfrastructureProcess(p.name) || isBridgeInfrastructureProcess(p.path)) {
+        message = L"UniversalDLSS5 internal process is isolated from capture injection"; return false;
+    }
     if (!p.accessible) { message = L"process not accessible"; return false; }
     if (p.blocksThirdPartyModules) { message = L"process policy blocks third-party DLL loading"; return false; }
     if (p.arch == Arch::Arm64 || p.arch == Arch::Unknown) { message = L"unsupported architecture"; return false; }

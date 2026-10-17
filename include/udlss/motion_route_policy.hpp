@@ -5,8 +5,13 @@
 namespace udlss {
 enum class MotionRoute : std::uint32_t { AdapterNative=0, TrackedNative=1, CameraDepth=2, Nvof=3, Hlsl=4, Zero=5 };
 struct MotionRouteAvailability { bool adapterNative{}; bool trackedNative{}; bool cameraDepth{}; bool nvof{}; bool hlsl{true}; };
-inline constexpr bool shouldMaintainHlslFlowHistory(MotionSource source){
-    return source==MotionSource::SynthesizedOpticalFlow;
+// Mask confidence also accepts camera-derived motion. Post compositing needs
+// the narrower native-vector contract, which includes independent objects.
+inline constexpr std::uint32_t postCompositeMotionFlags(MotionRoute route){
+    return route==MotionRoute::AdapterNative||route==MotionRoute::TrackedNative?4u:0u;
+}
+inline constexpr bool shouldMaintainHlslFlowHistory(MotionSource source,bool softwareFallbackNeeded=false){
+    return source==MotionSource::SynthesizedOpticalFlow || (source==MotionSource::Auto&&softwareFallbackNeeded);
 }
 
 inline constexpr MotionRoute chooseMotionRoute(const MotionRouteAvailability& a){
